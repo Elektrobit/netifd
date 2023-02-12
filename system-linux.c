@@ -1207,7 +1207,7 @@ static bool check_ifaddr(struct nlmsghdr *hdr, int ifindex)
 {
 	struct ifaddrmsg *ifa = NLMSG_DATA(hdr);
 
-	return ifa->ifa_index == ifindex;
+	return (long)ifa->ifa_index == ifindex;
 }
 
 static bool check_route(struct nlmsghdr *hdr, int ifindex)
@@ -1491,7 +1491,8 @@ int system_macvlan_add(struct device *macvlan, struct device *dev, struct macvla
 {
 	struct nl_msg *msg;
 	struct nlattr *linkinfo, *data;
-	int i, rv;
+	size_t i;
+	int rv;
 	static const struct {
 		const char *name;
 		enum macvlan_mode val;
@@ -1753,7 +1754,7 @@ system_set_ethtool_settings(struct device *dev, struct device_settings *s)
 		.ifr_data = (caddr_t)&ecmd,
 	};
 	static const struct {
-		int speed;
+		unsigned int speed;
 		uint8_t bit_half;
 		uint8_t bit_full;
 	} speed_mask[] = {
@@ -1762,7 +1763,7 @@ system_set_ethtool_settings(struct device *dev, struct device_settings *s)
 		{ 1000, ETHTOOL_LINK_MODE_1000baseT_Half_BIT, ETHTOOL_LINK_MODE_1000baseT_Full_BIT },
 	};
 	uint32_t adv;
-	int i;
+	size_t i;
 
 	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
 
@@ -2447,7 +2448,7 @@ static const struct {
 
 static void system_add_link_modes(struct blob_buf *b, __u32 mask)
 {
-	int i;
+	size_t i;
 	for (i = 0; i < ARRAY_SIZE(ethtool_link_modes); i++) {
 		if (mask & ethtool_link_modes[i].mask)
 			blobmsg_add_string(b, NULL, ethtool_link_modes[i].name);
@@ -2465,7 +2466,7 @@ system_if_force_external(const char *ifname)
 static const char *
 system_netdevtype_name(unsigned short dev_type)
 {
-	unsigned int i;
+	size_t i;
 
 	for (i = 0; i < ARRAY_SIZE(netdev_types); i++) {
 		if (netdev_types[i].id == dev_type)
@@ -2549,7 +2550,8 @@ ethtool_feature_index(const char *ifname, const char *keyname)
 {
 	struct ethtool_gstrings *feature_names;
 	struct ifreq ifr = { 0 };
-	int32_t n_features, i;
+	int32_t n_features;
+	uint32_t i;
 
 	n_features = ethtool_feature_count(ifname);
 
@@ -2684,7 +2686,7 @@ system_if_dump_stats(struct device *dev, struct blob_buf *b)
 		"rx_fifo_errors", "tx_carrier_errors",
 	};
 	int stats_dir;
-	int i;
+	size_t i;
 	uint64_t val = 0;
 
 	stats_dir = open(dev_sysfs_path(dev->ifname, "statistics"), O_DIRECTORY);
@@ -2934,7 +2936,8 @@ int system_del_route(struct device *dev, struct device_route *route)
 int system_flush_routes(void)
 {
 	const char *names[] = { "ipv4", "ipv6" };
-	int fd, i;
+	size_t i;
+	int fd;
 
 	for (i = 0; i < ARRAY_SIZE(names); i++) {
 		snprintf(dev_buf, sizeof(dev_buf), "%s/sys/net/%s/route/flush", proc_path, names[i]);

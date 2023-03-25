@@ -68,6 +68,11 @@ enum {
 	DEV_ATTR_IP6_ACCEPT_ROUTING_HEADER,
 	DEV_ATTR_IP6_HOP_LIMIT,
 	DEV_ATTR_VLAN,
+	DEV_ATTR_PAUSE,
+	DEV_ATTR_ASYM_PAUSE,
+	DEV_ATTR_RXPAUSE,
+	DEV_ATTR_TXPAUSE,
+	DEV_ATTR_AUTONEG,
 	__DEV_ATTR_MAX,
 };
 
@@ -132,11 +137,16 @@ enum {
 	DEV_OPT_ARP_ACCEPT		= (1ULL << 29),
 	DEV_OPT_SPEED			= (1ULL << 30),
 	DEV_OPT_DUPLEX			= (1ULL << 31),
-	DEV_OPT_IP_FORWARDING   = (1ULL << 32),
-	DEV_OPT_IP6_FORWARDING  = (1ULL << 33),
-	DEV_OPT_ARP             = (1ULL << 34),
-	DEV_OPT_IP6_ACCEPT_ROUTING_HEADER = (1ULL << 35),
-	DEV_OPT_IP6_HOP_LIMIT   = (1ULL << 36),
+	DEV_OPT_PAUSE			= (1ULL << 32),
+	DEV_OPT_ASYM_PAUSE		= (1ULL << 33),
+	DEV_OPT_RXPAUSE			= (1ULL << 34),
+	DEV_OPT_TXPAUSE			= (1ULL << 35),
+	DEV_OPT_AUTONEG			= (1ULL << 36),
+	DEV_OPT_IP_FORWARDING   = (1ULL << 37),
+	DEV_OPT_IP6_FORWARDING  = (1ULL << 38),
+	DEV_OPT_ARP             = (1ULL << 39),
+	DEV_OPT_IP6_ACCEPT_ROUTING_HEADER = (1ULL << 40),
+	DEV_OPT_IP6_HOP_LIMIT   = (1ULL << 41),
 };
 
 /* events broadcasted to all users of a device */
@@ -219,6 +229,11 @@ struct device_settings {
 	bool arp;
 	int accept_routing_header;
 	int hop_limit;
+	bool pause;
+	bool asym_pause;
+	bool rxpause;
+	bool txpause;
+	bool autoneg;
 };
 
 struct device_vlan_range {

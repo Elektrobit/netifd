@@ -55,6 +55,13 @@ IF (NOT DEFINED LIBNL_LIBS)
 	ENDIF()
 ENDIF()
 
+ADD_CUSTOM_COMMAND(
+	OUTPUT ethtool-modes.h
+	COMMAND ./make_ethtool_modes_h.sh ${CMAKE_C_COMPILER} > ./ethtool-modes.h
+	DEPENDS ./make_ethtool_modes_h.sh
+)
+ADD_CUSTOM_TARGET(ethtool-modes-h DEPENDS ethtool-modes.h)
+
 IF("${CMAKE_SYSTEM_NAME}" MATCHES "Linux" AND NOT DUMMY_MODE)
 	SET(SOURCES ${SOURCES} system-linux.c)
 	SET(LIBS ${LIBS} ${LIBNL_LIBS})
@@ -97,3 +104,4 @@ TARGET_LINK_LIBRARIES(zcip-script ${ubus} ${ubox})
 INSTALL(TARGETS zcip-script
 	RUNTIME DESTINATION libexec/netifd
 )
+ADD_DEPENDENCIES(netifd ethtool-modes-h)

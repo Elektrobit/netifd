@@ -9,11 +9,12 @@ ENDIF()
 
 OPTION(ENABLE_PROTO_SHELL "enable shell protocol handlers" ON)
 
-ADD_DEFINITIONS(-Os -Wall -Werror --std=gnu99 -Wmissing-declarations -Wno-unused-parameter -Wno-unused-but-set-parameter)
+ADD_DEFINITIONS(-Wall -Werror)
 IF(CMAKE_C_COMPILER_VERSION VERSION_GREATER 6)
 	add_definitions(-Wextra -Werror=implicit-function-declaration)
 	add_definitions(-Wformat -Werror=format-security -Werror=format-nonliteral)
 ENDIF()
+ADD_DEFINITIONS(-Os --std=gnu99 -Wmissing-declarations -Wno-unused-parameter -Wno-unused-but-set-parameter)
 
 IF(HAS_IMPLICIT_FALLTHROUGH)
   ADD_DEFINITIONS(-Wimplicit-fallthrough)

@@ -162,7 +162,7 @@ parse_static_address_option(struct interface *iface, struct blob_attr *attr,
 	struct device_addr *addr;
 	const char *str;
 	int n_addr = 0;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_STRING)
@@ -273,7 +273,7 @@ parse_address_list(struct interface *iface, struct blob_attr *attr, bool v6,
 	struct device_addr *addr;
 	struct blob_attr *cur;
 	int n_addr = 0;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem) {
 		addr = parse_address_item(cur, v6, ext);
@@ -399,7 +399,7 @@ parse_prefix_list(struct interface *iface, struct blob_attr *attr)
 {
 	struct blob_attr *cur;
 	int n_addr = 0;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_STRING)

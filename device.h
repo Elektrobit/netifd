@@ -67,6 +67,7 @@ enum {
 	DEV_ATTR_ARP,
 	DEV_ATTR_IP6_ACCEPT_ROUTING_HEADER,
 	DEV_ATTR_IP6_HOP_LIMIT,
+	DEV_ATTR_VLAN,
 	__DEV_ATTR_MAX,
 };
 
@@ -263,6 +264,10 @@ struct device {
 	bool bpdu_filter;
 
 	struct interface *config_iface;
+	struct {
+		uint16_t start, end;
+	} *extra_vlan;
+	int n_extra_vlan;
 
 	/* set interface up or down */
 	device_state_cb set_state;

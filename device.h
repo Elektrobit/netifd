@@ -76,6 +76,7 @@ enum {
 	DEV_ATTR_AUTONEG,
 	DEV_ATTR_GRO,
 	DEV_ATTR_MASTER,
+	DEV_ATTR_EEE,
 	__DEV_ATTR_MAX,
 };
 
@@ -147,11 +148,12 @@ enum {
 	DEV_OPT_AUTONEG			= (1ULL << 36),
 	DEV_OPT_GRO				= (1ULL << 37),
 	DEV_OPT_MASTER			= (1ULL << 38),
-	DEV_OPT_IP_FORWARDING   = (1ULL << 39),
-	DEV_OPT_IP6_FORWARDING  = (1ULL << 40),
-	DEV_OPT_ARP             = (1ULL << 41),
-	DEV_OPT_IP6_ACCEPT_ROUTING_HEADER = (1ULL << 42),
-	DEV_OPT_IP6_HOP_LIMIT   = (1ULL << 43),
+	DEV_OPT_EEE				= (1ULL << 39),
+	DEV_OPT_IP_FORWARDING   = (1ULL << 40),
+	DEV_OPT_IP6_FORWARDING  = (1ULL << 41),
+	DEV_OPT_ARP             = (1ULL << 42),
+	DEV_OPT_IP6_ACCEPT_ROUTING_HEADER = (1ULL << 43),
+	DEV_OPT_IP6_HOP_LIMIT   = (1ULL << 44),
 };
 
 /* events broadcasted to all users of a device */
@@ -241,6 +243,7 @@ struct device_settings {
 	bool autoneg;
 	bool gro;
 	int master_ifindex;
+	bool eee;
 };
 
 struct device_vlan_range {

@@ -74,6 +74,7 @@ enum {
 	DEV_ATTR_RXPAUSE,
 	DEV_ATTR_TXPAUSE,
 	DEV_ATTR_AUTONEG,
+	DEV_ATTR_GRO,
 	__DEV_ATTR_MAX,
 };
 
@@ -143,11 +144,12 @@ enum {
 	DEV_OPT_RXPAUSE			= (1ULL << 34),
 	DEV_OPT_TXPAUSE			= (1ULL << 35),
 	DEV_OPT_AUTONEG			= (1ULL << 36),
-	DEV_OPT_IP_FORWARDING   = (1ULL << 37),
-	DEV_OPT_IP6_FORWARDING  = (1ULL << 38),
-	DEV_OPT_ARP             = (1ULL << 39),
-	DEV_OPT_IP6_ACCEPT_ROUTING_HEADER = (1ULL << 40),
-	DEV_OPT_IP6_HOP_LIMIT   = (1ULL << 41),
+	DEV_OPT_GRO				= (1ULL << 37),
+	DEV_OPT_IP_FORWARDING   = (1ULL << 38),
+	DEV_OPT_IP6_FORWARDING  = (1ULL << 39),
+	DEV_OPT_ARP             = (1ULL << 40),
+	DEV_OPT_IP6_ACCEPT_ROUTING_HEADER = (1ULL << 41),
+	DEV_OPT_IP6_HOP_LIMIT   = (1ULL << 42),
 };
 
 /* events broadcasted to all users of a device */
@@ -235,6 +237,7 @@ struct device_settings {
 	bool rxpause;
 	bool txpause;
 	bool autoneg;
+	bool gro;
 };
 
 struct device_vlan_range {

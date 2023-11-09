@@ -1767,6 +1767,7 @@ int system_vlandev_del(struct device *vlandev)
 	return system_link_del(vlandev->ifname);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 struct if_get_master_data {
 	int ifindex;
 	int master_ifindex;
@@ -1929,6 +1930,7 @@ static void system_set_master(struct device *dev, int master_ifindex)
 failure:
 	nlmsg_free(nlm);
 }
+#endif
 
 static void ethtool_link_mode_clear_bit(__s8 nwords, int nr, __u32 *mask)
 {
@@ -2273,11 +2275,13 @@ system_if_get_settings(struct device *dev, struct device_settings *s)
 		s->flags |= DEV_OPT_GRO;
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 	ret = system_if_get_master_ifindex(dev);
 	if (ret >= 0) {
 		s->master_ifindex = ret;
 		s->flags |= DEV_OPT_MASTER;
 	}
+#endif
 }
 
 void
@@ -2393,8 +2397,11 @@ system_if_apply_settings(struct device *dev, struct device_settings *s, uint64_t
 	}
 
 	if (apply_mask & DEV_OPT_MASTER)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 		system_set_master(dev, s->master_ifindex);
-
+#else
+		netifd_log_message(L_WARNING, "%s Your kernel is older than linux 6.1.0, changing DSA port conduit is not supported!", dev->ifname);
+#endif
 	system_set_ethtool_settings(dev, s);
 }
 

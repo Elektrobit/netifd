@@ -1895,6 +1895,17 @@ out:
 	return ret;
 }
 
+static void system_refresh_orig_macaddr(struct device *dev, struct device_settings *s)
+{
+	struct ifreq ifr;
+
+	memset(&ifr, 0, sizeof(ifr));
+	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
+
+	if (ioctl(sock_ioctl, SIOCGIFHWADDR, &ifr) == 0)
+		memcpy(s->macaddr, &ifr.ifr_hwaddr.sa_data, sizeof(s->macaddr));
+}
+
 static void system_set_master(struct device *dev, int master_ifindex)
 {
 	struct ifinfomsg ifi = { .ifi_family = AF_UNSPEC, };
@@ -2414,12 +2425,14 @@ system_if_apply_settings(struct device *dev, struct device_settings *s, uint64_t
 		system_set_ip6_hop_limit(dev, buf);
 	}
 
-	if (apply_mask & DEV_OPT_MASTER)
+	if (apply_mask & DEV_OPT_MASTER) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 		system_set_master(dev, s->master_ifindex);
+		system_refresh_orig_macaddr(dev, &dev->orig_settings);
 #else
 		netifd_log_message(L_WARNING, "%s Your kernel is older than linux 6.1.0, changing DSA port conduit is not supported!", dev->ifname);
 #endif
+	}
 	system_set_ethtool_settings(dev, s);
 }
 

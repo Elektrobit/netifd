@@ -1783,7 +1783,7 @@ int system_vlandev_del(struct device *vlandev)
 struct if_get_master_data {
 	int ifindex;
 	int master_ifindex;
-	bool pending;
+	int pending;
 };
 
 static void if_get_master_dsa_linkinfo_attr(struct if_get_master_data *data,
@@ -1797,7 +1797,6 @@ static void if_get_master_dsa_linkinfo_attr(struct if_get_master_data *data,
 			continue;
 
 		data->master_ifindex = *(__u32 *)RTA_DATA(cur);
-		return;
 	}
 }
 
@@ -1812,7 +1811,7 @@ static void if_get_master_linkinfo_attr(struct if_get_master_data *data,
 			continue;
 
 		if (cur->rta_type == IFLA_INFO_KIND && strcmp("dsa", (char *)RTA_DATA(cur)))
-			return;
+			break;
 
 		if (cur->rta_type == IFLA_INFO_DATA)
 			if_get_master_dsa_linkinfo_attr(data, cur);
@@ -1840,11 +1839,8 @@ static int cb_if_get_master_valid(struct nl_msg *msg, void *arg)
 	rem = nh->nlmsg_len - NLMSG_LENGTH(sizeof(*ifi));
 
 	while (RTA_OK(attr, rem)) {
-		if (attr->rta_type == IFLA_LINKINFO) {
+		if (attr->rta_type == IFLA_LINKINFO)
 			if_get_master_linkinfo_attr(data, attr);
-			data->pending = false;
-			break;
-		}
 
 		attr = RTA_NEXT(attr, rem);
 	}
@@ -1855,16 +1851,14 @@ static int cb_if_get_master_valid(struct nl_msg *msg, void *arg)
 static int cb_if_get_master_ack(struct nl_msg *msg, void *arg)
 {
 	struct if_get_master_data *data = (struct if_get_master_data *)arg;
-	data->pending = false;
-
+	data->pending = 0;
 	return NL_STOP;
 }
 
 static int cb_if_get_master_error(struct sockaddr_nl *nla, struct nlmsgerr *err, void *arg)
 {
 	struct if_get_master_data *data = (struct if_get_master_data *)arg;
-	data->pending = false;
-
+	data->pending = 0;
 	return NL_STOP;
 }
 
@@ -1879,7 +1873,7 @@ static int system_if_get_master_ifindex(struct device *dev)
 	struct if_get_master_data data = {
 		.ifindex = if_nametoindex(dev->ifname),
 		.master_ifindex = -1,
-		.pending = true,
+		.pending = 1,
 	};
 	int ret = -1;
 
@@ -1902,7 +1896,7 @@ static int system_if_get_master_ifindex(struct device *dev)
 	if (ret < 0)
 		goto free;
 
-	while (data.pending)
+	while (data.pending > 0)
 		nl_recvmsgs(sock_rtnl, cb);
 
 	if (data.master_ifindex >= 0)

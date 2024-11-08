@@ -77,6 +77,7 @@ enum {
 	DEV_ATTR_GRO,
 	DEV_ATTR_MASTER,
 	DEV_ATTR_EEE,
+	DEV_ATTR_TAGS,
 	__DEV_ATTR_MAX,
 };
 
@@ -265,6 +266,7 @@ struct device {
 	struct kvlist vlan_aliases;
 	struct blob_attr *config_auth_vlans;
 	struct blob_attr *auth_vlans;
+	struct blob_attr *tags;
 
 	char ifname[IFNAMSIZ];
 	int ifindex;

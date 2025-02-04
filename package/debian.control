@@ -1,6 +1,6 @@
 Source: netifd
 Maintainer: Elektrobit <info@elektrobit.de>
-Build-Depends: cmake, debhelper (>= 9), libubus-dev, libubox-dev, libjson-c-dev, libuci-dev, libnl-3-dev, pkg-config
+Build-Depends: cmake, debhelper (>= 9), libubus-dev, libubox-dev, libjson-c-dev, libuci-dev, libnl-3-dev, pkg-config, ethtool
 Standards-Version: 4.5.0
 
 Package: netifd

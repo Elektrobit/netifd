@@ -72,7 +72,9 @@ __vlandev_hotplug_op(struct device *dev, struct device *member, struct blob_attr
 
 	blob_buf_init(&b, 0);
 	a = blobmsg_open_array(&b, "vlans");
-	blobmsg_printf(&b, NULL, "%d", mvdev->config.vid);
+	blobmsg_printf(&b, NULL, "%d:u", mvdev->config.vid);
+	if (vlan && blobmsg_len(vlan))
+		blob_put_raw(&b, blobmsg_data(vlan), blobmsg_len(vlan));
 	blobmsg_close_array(&b, a);
 
 	if (add)
@@ -139,6 +141,10 @@ vlandev_base_cb(struct device_user *dev, enum device_event ev)
 	case DEV_EVENT_UPDATE_IFNAME:
 		vlandev_hotplug_check(mvdev);
 		break;
+	case DEV_EVENT_TOPO_CHANGE:
+		/* Propagate topo changes */
+		device_broadcast_event(&mvdev->dev, DEV_EVENT_TOPO_CHANGE);
+		break;
 	default:
 		return;
 	}
@@ -185,7 +191,7 @@ vlandev_set_state(struct device *dev, bool up)
 {
 	struct vlandev_device *mvdev;
 
-	D(SYSTEM, "vlandev_set_state(%s, %u)\n", dev->ifname, up);
+	D(SYSTEM, "vlandev_set_state(%s, %u)", dev->ifname, up);
 
 	mvdev = container_of(dev, struct vlandev_device, dev);
 	if (up)
@@ -284,7 +290,8 @@ static void vlandev_qos_mapping_list_apply(struct vlist_simple_tree *qos_mapping
 {
 	struct blob_attr *cur;
 	struct vlan_qos_mapping *qos_mapping;
-	int rem, rc;
+	size_t rem;
+	int rc;
 
 	blobmsg_for_each_attr(cur, list, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_STRING)

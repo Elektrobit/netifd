@@ -48,6 +48,8 @@
 
 #include <sched.h>
 
+#include "ethtool-modes.h"
+
 #ifndef RTN_FAILED_POLICY
 #define RTN_FAILED_POLICY 12
 #endif
@@ -94,23 +96,87 @@ static char dev_buf[256];
 static const char *proc_path = "/proc";
 static const char *sysfs_path = "/sys";
 
+struct netdev_type {
+	unsigned short id;
+	const char *name;
+};
+
+static const struct netdev_type netdev_types[] = {
+	{ARPHRD_NETROM, "netrom"},
+	{ARPHRD_ETHER, "ethernet"},
+	{ARPHRD_EETHER, "eethernet"},
+	{ARPHRD_AX25, "ax25"},
+	{ARPHRD_PRONET, "pronet"},
+	{ARPHRD_CHAOS, "chaos"},
+	{ARPHRD_IEEE802, "ieee802"},
+	{ARPHRD_ARCNET, "arcnet"},
+	{ARPHRD_APPLETLK, "appletlk"},
+	{ARPHRD_DLCI, "dlci"},
+	{ARPHRD_ATM, "atm"},
+	{ARPHRD_METRICOM, "metricom"},
+	{ARPHRD_IEEE1394, "ieee1394"},
+	{ARPHRD_EUI64, "eui64"},
+	{ARPHRD_INFINIBAND, "infiniband"},
+	{ARPHRD_SLIP, "slip"},
+	{ARPHRD_CSLIP, "cslip"},
+	{ARPHRD_SLIP6, "slip6"},
+	{ARPHRD_CSLIP6, "cslip6"},
+	{ARPHRD_RSRVD, "rsrvd"},
+	{ARPHRD_ADAPT, "adapt"},
+	{ARPHRD_ROSE, "rose"},
+	{ARPHRD_X25, "x25"},
+	{ARPHRD_HWX25, "hwx25"},
+	{ARPHRD_PPP, "ppp"},
+	{ARPHRD_CISCO, "cisco"},
+	{ARPHRD_LAPB, "lapb"},
+	{ARPHRD_DDCMP, "ddcmp"},
+	{ARPHRD_RAWHDLC, "rawhdlc"},
+	{ARPHRD_TUNNEL, "tunnel"},
+	{ARPHRD_TUNNEL6, "tunnel6"},
+	{ARPHRD_FRAD, "frad"},
+	{ARPHRD_SKIP, "skip"},
+	{ARPHRD_LOOPBACK, "loopback"},
+	{ARPHRD_LOCALTLK, "localtlk"},
+	{ARPHRD_FDDI, "fddi"},
+	{ARPHRD_BIF, "bif"},
+	{ARPHRD_SIT, "sit"},
+	{ARPHRD_IPDDP, "ipddp"},
+	{ARPHRD_IPGRE, "ipgre"},
+	{ARPHRD_PIMREG,"pimreg"},
+	{ARPHRD_HIPPI, "hippi"},
+	{ARPHRD_ASH, "ash"},
+	{ARPHRD_ECONET, "econet"},
+	{ARPHRD_IRDA, "irda"},
+	{ARPHRD_FCPP, "fcpp"},
+	{ARPHRD_FCAL, "fcal"},
+	{ARPHRD_FCPL, "fcpl"},
+	{ARPHRD_FCFABRIC, "fcfabric"},
+	{ARPHRD_IEEE80211, "ieee80211"},
+	{ARPHRD_IEEE80211_PRISM, "ie80211-prism"},
+	{ARPHRD_IEEE80211_RADIOTAP, "ieee80211-radiotap"},
+#ifdef ARPHRD_PHONET
+	{ARPHRD_PHONET, "phonet"},
+#endif
+#ifdef ARPHRD_PHONET_PIPE
+	{ARPHRD_PHONET_PIPE, "phonet-pipe"},
+#endif
+	{ARPHRD_IEEE802154, "ieee802154"},
+	{ARPHRD_VOID, "void"},
+	{ARPHRD_NONE, "none"}
+};
+
 static void
 handler_nl_event(struct uloop_fd *u, unsigned int events)
 {
 	struct event_socket *ev = container_of(u, struct event_socket, uloop);
-	int err;
-	socklen_t errlen = sizeof(err);
+	int ret;
 
-	if (!u->error) {
-		nl_recvmsgs_default(ev->sock);
+	ret = nl_recvmsgs_default(ev->sock);
+	if (ret >= 0)
 		return;
-	}
 
-	if (getsockopt(u->fd, SOL_SOCKET, SO_ERROR, (void *)&err, &errlen))
-		goto abort;
-
-	switch(err) {
-	case ENOBUFS:
+	switch (-ret) {
+	case NLE_NOMEM:
 		/* Increase rx buffer size on netlink socket */
 		ev->bufsize *= 2;
 		if (nl_socket_set_buffer_size(ev->sock, ev->bufsize, 0))
@@ -124,12 +190,19 @@ handler_nl_event(struct uloop_fd *u, unsigned int events)
 	default:
 		goto abort;
 	}
-	u->error = false;
 	return;
 
 abort:
 	uloop_fd_delete(&ev->uloop);
 	return;
+}
+
+static void
+nl_udebug_cb(void *priv, struct nl_msg *msg)
+{
+	struct nlmsghdr *nlh = nlmsg_hdr(msg);
+
+	udebug_netlink_msg(priv, nlmsg_get_proto(msg), nlh, nlh->nlmsg_len);
 }
 
 static struct nl_sock *
@@ -148,6 +221,9 @@ create_socket(int protocol, int groups)
 		nl_socket_free(sock);
 		return NULL;
 	}
+
+	nl_socket_set_tx_debug_cb(sock, nl_udebug_cb, &udb_nl);
+	nl_socket_set_rx_debug_cb(sock, nl_udebug_cb, &udb_nl);
 
 	return sock;
 }
@@ -650,6 +726,32 @@ static int system_get_arp_accept(struct device *dev, char *buf, const size_t buf
 			dev->ifname, buf, buf_sz);
 }
 
+static int
+system_device_ifreq(struct ifreq *ifr, const char *ifname, int cmd)
+{
+	memset(ifr, 0, sizeof(*ifr));
+	strncpy(ifr->ifr_name, ifname, sizeof(ifr->ifr_name) - 1);
+	return ioctl(sock_ioctl, cmd, ifr);
+}
+
+#ifndef IFF_LOWER_UP
+#define IFF_LOWER_UP	0x10000
+#endif
+
+static void
+system_device_update_state(struct device *dev, unsigned int flags)
+{
+	unsigned int ifindex = system_if_resolve(dev);
+
+	if (dev->type == &simple_device_type) {
+		if (dev->external)
+			device_set_disabled(dev, !(flags & IFF_UP));
+
+		device_set_present(dev, ifindex > 0);
+	}
+	device_set_link(dev, flags & IFF_LOWER_UP ? true : false);
+}
+
 static int system_get_ip_forwarding(struct device *dev, char *buf, const size_t buf_sz)
 {
 	return system_get_dev_sysctl("ipv4/conf", "forwarding",
@@ -678,30 +780,22 @@ static int system_get_ip6_hop_limit(struct device *dev, char *buf, const size_t 
 static int cb_rtnl_event(struct nl_msg *msg, void *arg)
 {
 	struct nlmsghdr *nh = nlmsg_hdr(msg);
+	struct ifinfomsg *ifi = NLMSG_DATA(nh);
 	struct nlattr *nla[__IFLA_MAX];
-	int link_state = 0;
-	char buf[10];
+	struct device *dev;
 
 	if (nh->nlmsg_type != RTM_NEWLINK)
-		goto out;
+		return 0;
 
 	nlmsg_parse(nh, sizeof(struct ifinfomsg), nla, __IFLA_MAX - 1, NULL);
 	if (!nla[IFLA_IFNAME])
-		goto out;
+		return 0;
 
-	struct device *dev = device_find(nla_data(nla[IFLA_IFNAME]));
+	dev = device_find(nla_data(nla[IFLA_IFNAME]));
 	if (!dev)
-		goto out;
+		return 0;
 
-	if (!system_get_dev_sysfs("carrier", dev->ifname, buf, sizeof(buf)))
-		link_state = strtoul(buf, NULL, 0);
-
-	if (dev->type == &simple_device_type)
-		device_set_present(dev, true);
-
-	device_set_link(dev, link_state ? true : false);
-
-out:
+	system_device_update_state(dev, ifi->ifi_flags);
 	return 0;
 }
 
@@ -760,24 +854,19 @@ handle_hotplug_event(struct uloop_fd *u, unsigned int events)
 	struct sockaddr_nl nla;
 	unsigned char *buf = NULL;
 	int size;
-	int err;
-	socklen_t errlen = sizeof(err);
 
-	if (!u->error) {
-		while ((size = nl_recv(ev->sock, &nla, &buf, NULL)) > 0) {
-			if (nla.nl_pid == 0)
-				handle_hotplug_msg((char *) buf, size);
+	while ((size = nl_recv(ev->sock, &nla, &buf, NULL)) > 0) {
+		if (nla.nl_pid == 0)
+			handle_hotplug_msg((char *) buf, size);
 
-			free(buf);
-		}
-		return;
+		free(buf);
 	}
 
-	if (getsockopt(u->fd, SOL_SOCKET, SO_ERROR, (void *)&err, &errlen))
-		goto abort;
+	switch (-size) {
+	case 0:
+		return;
 
-	switch(err) {
-	case ENOBUFS:
+	case NLE_NOMEM:
 		/* Increase rx buffer size on netlink socket */
 		ev->bufsize *= 2;
 		if (nl_socket_set_buffer_size(ev->sock, ev->bufsize, 0))
@@ -787,7 +876,6 @@ handle_hotplug_event(struct uloop_fd *u, unsigned int events)
 	default:
 		goto abort;
 	}
-	u->error = false;
 	return;
 
 abort:
@@ -900,8 +988,10 @@ system_bridge_set_wireless(struct device *bridge, struct device *dev)
 	bool mcast_to_ucast = dev->wireless_ap;
 	bool hairpin;
 
-	if (bridge->settings.flags & DEV_OPT_MULTICAST_TO_UNICAST &&
-	    !bridge->settings.multicast_to_unicast)
+	if (dev->settings.flags & DEV_OPT_MULTICAST_TO_UNICAST)
+		mcast_to_ucast = dev->settings.multicast_to_unicast;
+	else if (bridge->settings.flags & DEV_OPT_MULTICAST_TO_UNICAST &&
+	         !bridge->settings.multicast_to_unicast)
 		mcast_to_ucast = false;
 
 	hairpin = mcast_to_ucast || dev->wireless_proxyarp;
@@ -920,16 +1010,19 @@ int system_bridge_addif(struct device *bridge, struct device *dev)
 	int tries = 0;
 	int ret;
 
-retry:
-	ret = 0;
-	oldbr = system_get_bridge(dev->ifname, dev_buf, sizeof(dev_buf));
-	if (!oldbr || strcmp(oldbr, bridge->ifname) != 0) {
+
+	for (tries = 0; tries < 3; tries++) {
+		ret = 0;
+		oldbr = system_get_bridge(dev->ifname, dev_buf, sizeof(dev_buf));
+		if (oldbr && !strcmp(oldbr, bridge->ifname))
+			break;
+
 		ret = system_bridge_if(bridge->ifname, dev, SIOCBRADDIF, NULL);
-		tries++;
-		D(SYSTEM, "Failed to add device '%s' to bridge '%s' (tries=%d): %s\n",
+		if (!ret)
+			break;
+
+		D(SYSTEM, "Failed to add device '%s' to bridge '%s' (tries=%d): %s",
 		  dev->ifname, bridge->ifname, tries, strerror(errno));
-		if (tries <= 3)
-			goto retry;
 	}
 
 	if (dev->wireless)
@@ -967,7 +1060,7 @@ int system_bridge_delif(struct device *bridge, struct device *dev)
 	return system_bridge_if(bridge->ifname, dev, SIOCBRDELIF, NULL);
 }
 
-int system_bridge_vlan(const char *iface, uint16_t vid, bool add, unsigned int vflags)
+int system_bridge_vlan(const char *iface, uint16_t vid, int16_t vid_end, bool add, unsigned int vflags)
 {
 	struct bridge_vlan_info vinfo = { .vid = vid, };
 	unsigned short flags = 0;
@@ -1002,7 +1095,18 @@ int system_bridge_vlan(const char *iface, uint16_t vid, bool add, unsigned int v
 	if (flags)
 		nla_put_u16(nlm, IFLA_BRIDGE_FLAGS, flags);
 
+	if (vid_end > vid)
+		vinfo.flags |= BRIDGE_VLAN_INFO_RANGE_BEGIN;
+
 	nla_put(nlm, IFLA_BRIDGE_VLAN_INFO, sizeof(vinfo), &vinfo);
+
+	if (vid_end > vid) {
+		vinfo.flags &= ~BRIDGE_VLAN_INFO_RANGE_BEGIN;
+		vinfo.flags |= BRIDGE_VLAN_INFO_RANGE_END;
+		vinfo.vid = vid_end;
+		nla_put(nlm, IFLA_BRIDGE_VLAN_INFO, sizeof(vinfo), &vinfo);
+	}
+
 	nla_nest_end(nlm, afspec);
 
 	return system_rtnl_call(nlm);
@@ -1018,7 +1122,7 @@ int system_bonding_set_device(struct device *dev, struct bonding_config *cfg)
 	struct blob_attr *cur;
 	char op = cfg ? '+' : '-';
 	char buf[64];
-	int rem;
+	size_t rem;
 
 	snprintf(dev_buf, sizeof(dev_buf), "%s/class/net/bonding_masters", sysfs_path);
 	snprintf(buf, sizeof(buf), "%c%s", op, ifname);
@@ -1083,7 +1187,7 @@ int system_bonding_set_port(struct device *dev, struct device *port, bool add, b
 {
 	const char *port_name = port->ifname;
 	const char op_ch = add ? '+' : '-';
-	char buf[IFNAMSIZ + 2];
+	char buf[IFNAMSIZ + 1];
 
 	snprintf(buf, sizeof(buf), "%c%s", op_ch, port_name);
 	system_if_down(port);
@@ -1101,21 +1205,17 @@ int system_if_resolve(struct device *dev)
 {
 	struct ifreq ifr;
 
-	memset(&ifr, 0, sizeof(ifr));
-	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
-	if (!ioctl(sock_ioctl, SIOCGIFINDEX, &ifr))
-		return ifr.ifr_ifindex;
-	else
+	if (system_device_ifreq(&ifr, dev->ifname, SIOCGIFINDEX))
 		return 0;
+
+	return ifr.ifr_ifindex;
 }
 
 static int system_if_flags(const char *ifname, unsigned add, unsigned rem)
 {
 	struct ifreq ifr;
 
-	memset(&ifr, 0, sizeof(ifr));
-	strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name) - 1);
-	if (ioctl(sock_ioctl, SIOCGIFFLAGS, &ifr) < 0)
+	if (system_device_ifreq(&ifr, ifname, SIOCGIFFLAGS))
 		return -1;
 
 	ifr.ifr_flags |= add;
@@ -1136,7 +1236,7 @@ static bool check_ifaddr(struct nlmsghdr *hdr, int ifindex)
 {
 	struct ifaddrmsg *ifa = NLMSG_DATA(hdr);
 
-	return ifa->ifa_index == ifindex;
+	return (long)ifa->ifa_index == ifindex;
 }
 
 static bool check_route(struct nlmsghdr *hdr, int ifindex)
@@ -1197,9 +1297,9 @@ static int cb_clear_event(struct nl_msg *msg, void *arg)
 		return NL_SKIP;
 
 	if (type == RTM_DELRULE)
-		D(SYSTEM, "Remove a rule\n");
+		D(SYSTEM, "Remove a rule");
 	else
-		D(SYSTEM, "Remove %s from device %s\n",
+		D(SYSTEM, "Remove %s from device %s",
 		  type == RTM_DELADDR ? "an address" : "a route",
 		  clr->dev->ifname);
 
@@ -1212,9 +1312,9 @@ static int cb_clear_event(struct nl_msg *msg, void *arg)
 	ret = nl_send_auto_complete(sock_rtnl, clr->msg);
 	if (ret < 0) {
 		if (type == RTM_DELRULE)
-			D(SYSTEM, "Error deleting a rule: %d\n", ret);
+			D(SYSTEM, "Error deleting a rule: %d", ret);
 		else
-			D(SYSTEM, "Error deleting %s from device '%s': %d\n",
+			D(SYSTEM, "Error deleting %s from device '%s': %d",
 				type == RTM_DELADDR ? "an address" : "a route",
 				clr->dev->ifname, ret);
 	}
@@ -1307,14 +1407,14 @@ void system_if_clear_state(struct device *dev)
 	system_if_flags(dev->ifname, 0, IFF_UP);
 
 	if (system_is_bridge(dev->ifname)) {
-		D(SYSTEM, "Delete existing bridge named '%s'\n", dev->ifname);
+		D(SYSTEM, "Delete existing bridge named '%s'", dev->ifname);
 		system_bridge_delbr(dev);
 		return;
 	}
 
 	bridge = system_get_bridge(dev->ifname, buf, sizeof(buf));
 	if (bridge) {
-		D(SYSTEM, "Remove device '%s' from bridge '%s'\n", dev->ifname, bridge);
+		D(SYSTEM, "Remove device '%s' from bridge '%s'", dev->ifname, bridge);
 		system_bridge_if(bridge, dev, SIOCBRDELIF, NULL);
 	}
 
@@ -1407,7 +1507,7 @@ int system_bridge_addbr(struct device *bridge, struct bridge_config *cfg)
 
 	rv = system_rtnl_call(msg);
 	if (rv)
-		D(SYSTEM, "Error adding bridge '%s': %d\n", bridge->ifname, rv);
+		D(SYSTEM, "Error adding bridge '%s': %d", bridge->ifname, rv);
 
 	return rv;
 
@@ -1420,7 +1520,8 @@ int system_macvlan_add(struct device *macvlan, struct device *dev, struct macvla
 {
 	struct nl_msg *msg;
 	struct nlattr *linkinfo, *data;
-	int i, rv;
+	size_t i;
+	int rv;
 	static const struct {
 		const char *name;
 		enum macvlan_mode val;
@@ -1462,7 +1563,7 @@ int system_macvlan_add(struct device *macvlan, struct device *dev, struct macvla
 
 	rv = system_rtnl_call(msg);
 	if (rv)
-		D(SYSTEM, "Error adding macvlan '%s' over '%s': %d\n", macvlan->ifname, dev->ifname, rv);
+		D(SYSTEM, "Error adding macvlan '%s' over '%s': %d", macvlan->ifname, dev->ifname, rv);
 
 	return rv;
 
@@ -1510,7 +1611,7 @@ int system_netns_set(int netns_fd)
 int system_veth_add(struct device *veth, struct veth_config *cfg)
 {
 	struct nl_msg *msg;
-	struct ifinfomsg empty_iim = {};
+	struct ifinfomsg empty_iim = {0,};
 	struct nlattr *linkinfo, *data, *veth_info;
 	int rv;
 
@@ -1550,9 +1651,9 @@ int system_veth_add(struct device *veth, struct veth_config *cfg)
 	rv = system_rtnl_call(msg);
 	if (rv) {
 		if (cfg->flags & VETH_OPT_PEER_NAME)
-			D(SYSTEM, "Error adding veth '%s' with peer '%s': %d\n", veth->ifname, cfg->peer_name, rv);
+			D(SYSTEM, "Error adding veth '%s' with peer '%s': %d", veth->ifname, cfg->peer_name, rv);
 		else
-			D(SYSTEM, "Error adding veth '%s': %d\n", veth->ifname, rv);
+			D(SYSTEM, "Error adding veth '%s': %d", veth->ifname, rv);
 	}
 
 	return rv;
@@ -1658,7 +1759,7 @@ int system_vlandev_add(struct device *vlandev, struct device *dev, struct vlande
 
 	rv = system_rtnl_call(msg);
 	if (rv)
-		D(SYSTEM, "Error adding vlandev '%s' over '%s': %d\n", vlandev->ifname, dev->ifname, rv);
+		D(SYSTEM, "Error adding vlandev '%s' over '%s': %d", vlandev->ifname, dev->ifname, rv);
 
 	return rv;
 
@@ -1672,55 +1773,387 @@ int system_vlandev_del(struct device *vlandev)
 	return system_link_del(vlandev->ifname);
 }
 
-static void
-system_set_ethtool_settings(struct device *dev, struct device_settings *s)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
+struct if_get_master_data {
+	int ifindex;
+	int master_ifindex;
+	int pending;
+};
+
+static void if_get_master_dsa_linkinfo_attr(struct if_get_master_data *data,
+			       struct rtattr *attr)
 {
-	struct ethtool_cmd ecmd = {
-		.cmd = ETHTOOL_GSET,
+	struct rtattr *cur;
+	int rem = RTA_PAYLOAD(attr);
+
+	for (cur = RTA_DATA(attr); RTA_OK(cur, rem); cur = RTA_NEXT(cur, rem)) {
+		if (cur->rta_type != IFLA_DSA_MASTER)
+			continue;
+
+		data->master_ifindex = *(__u32 *)RTA_DATA(cur);
+	}
+}
+
+static void if_get_master_linkinfo_attr(struct if_get_master_data *data,
+			       struct rtattr *attr)
+{
+	struct rtattr *cur;
+	int rem = RTA_PAYLOAD(attr);
+
+	for (cur = RTA_DATA(attr); RTA_OK(cur, rem); cur = RTA_NEXT(cur, rem)) {
+		if (cur->rta_type != IFLA_INFO_KIND && cur->rta_type != IFLA_INFO_DATA)
+			continue;
+
+		if (cur->rta_type == IFLA_INFO_KIND && strcmp("dsa", (char *)RTA_DATA(cur)))
+			break;
+
+		if (cur->rta_type == IFLA_INFO_DATA)
+			if_get_master_dsa_linkinfo_attr(data, cur);
+	}
+}
+
+static int cb_if_get_master_valid(struct nl_msg *msg, void *arg)
+{
+	struct nlmsghdr *nh = nlmsg_hdr(msg);
+	struct ifinfomsg *ifi = NLMSG_DATA(nh);
+	struct if_get_master_data *data = (struct if_get_master_data *)arg;
+	struct rtattr *attr;
+	int rem;
+
+	if (nh->nlmsg_type != RTM_NEWLINK)
+		return NL_SKIP;
+
+	if (ifi->ifi_family != AF_UNSPEC)
+		return NL_SKIP;
+
+	if (ifi->ifi_index != data->ifindex)
+		return NL_SKIP;
+
+	attr = IFLA_RTA(ifi);
+	rem = nh->nlmsg_len - NLMSG_LENGTH(sizeof(*ifi));
+
+	while (RTA_OK(attr, rem)) {
+		if (attr->rta_type == IFLA_LINKINFO)
+			if_get_master_linkinfo_attr(data, attr);
+
+		attr = RTA_NEXT(attr, rem);
+	}
+
+	return NL_OK;
+}
+
+static int cb_if_get_master_ack(struct nl_msg *msg, void *arg)
+{
+	struct if_get_master_data *data = (struct if_get_master_data *)arg;
+	data->pending = 0;
+	return NL_STOP;
+}
+
+static int cb_if_get_master_error(struct sockaddr_nl *nla, struct nlmsgerr *err, void *arg)
+{
+	struct if_get_master_data *data = (struct if_get_master_data *)arg;
+	data->pending = 0;
+	return NL_STOP;
+}
+
+static int system_if_get_master_ifindex(struct device *dev)
+{
+	struct nl_cb *cb = nl_cb_alloc(NL_CB_DEFAULT);
+	struct nl_msg *msg;
+	struct ifinfomsg ifi = {
+		.ifi_family = AF_UNSPEC,
+		.ifi_index = 0,
 	};
+	struct if_get_master_data data = {
+		.ifindex = if_nametoindex(dev->ifname),
+		.master_ifindex = -1,
+		.pending = 1,
+	};
+	int ret = -1;
+
+	if (!cb)
+		return ret;
+
+	msg = nlmsg_alloc_simple(RTM_GETLINK, NLM_F_REQUEST);
+	if (!msg)
+		goto out;
+
+	if (nlmsg_append(msg, &ifi, sizeof(ifi), 0) ||
+	    nla_put_string(msg, IFLA_IFNAME, dev->ifname))
+		goto free;
+
+	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_if_get_master_valid, &data);
+	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_if_get_master_ack, &data);
+	nl_cb_err(cb, NL_CB_CUSTOM, cb_if_get_master_error, &data);
+
+	ret = nl_send_auto_complete(sock_rtnl, msg);
+	if (ret < 0)
+		goto free;
+
+	while (data.pending > 0)
+		nl_recvmsgs(sock_rtnl, cb);
+
+	if (data.master_ifindex >= 0)
+		ret = data.master_ifindex;
+
+free:
+	nlmsg_free(msg);
+out:
+	nl_cb_put(cb);
+	return ret;
+}
+
+static void system_refresh_orig_macaddr(struct device *dev, struct device_settings *s)
+{
+	struct ifreq ifr;
+
+	memset(&ifr, 0, sizeof(ifr));
+	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
+
+	if (ioctl(sock_ioctl, SIOCGIFHWADDR, &ifr) == 0)
+		memcpy(s->macaddr, &ifr.ifr_hwaddr.sa_data, sizeof(s->macaddr));
+}
+
+static void system_set_master(struct device *dev, int master_ifindex)
+{
+	struct ifinfomsg ifi = { .ifi_family = AF_UNSPEC, };
+	struct nl_msg *nlm;
+
+	nlm = nlmsg_alloc_simple(RTM_NEWLINK, NLM_F_REQUEST);
+	if (!nlm)
+		return;
+
+	nlmsg_append(nlm, &ifi, sizeof(ifi), 0);
+	nla_put_string(nlm, IFLA_IFNAME, dev->ifname);
+
+	struct nlattr *linkinfo = nla_nest_start(nlm, IFLA_LINKINFO);
+	if (!linkinfo)
+		goto failure;
+
+	nla_put_string(nlm, IFLA_INFO_KIND, "dsa");
+	struct nlattr *infodata = nla_nest_start(nlm, IFLA_INFO_DATA);
+	if (!infodata)
+		goto failure;
+
+	nla_put_u32(nlm, IFLA_DSA_MASTER, master_ifindex);
+
+	nla_nest_end(nlm, infodata);
+	nla_nest_end(nlm, linkinfo);
+
+	system_rtnl_call(nlm);
+
+	return;
+
+failure:
+	nlmsg_free(nlm);
+}
+#endif
+
+static void ethtool_link_mode_clear_bit(__s8 nwords, int nr, __u32 *mask)
+{
+	if (nr < 0)
+		return;
+
+	if (nr >= (nwords * 32))
+		return;
+
+	mask[nr / 32] &= ~(1U << (nr % 32));
+}
+
+static bool ethtool_link_mode_test_bit(__s8 nwords, int nr, const __u32 *mask)
+{
+	if (nr < 0)
+		return false;
+
+	if (nr >= (nwords * 32))
+		return false;
+
+	return !!(mask[nr / 32] & (1U << (nr % 32)));
+}
+
+static int
+system_get_ethtool_gro(struct device *dev)
+{
+	struct ethtool_value ecmd;
 	struct ifreq ifr = {
 		.ifr_data = (caddr_t)&ecmd,
 	};
-	static const struct {
-		int speed;
-		uint8_t bit_half;
-		uint8_t bit_full;
-	} speed_mask[] = {
-		{ 10, ETHTOOL_LINK_MODE_10baseT_Half_BIT, ETHTOOL_LINK_MODE_10baseT_Full_BIT },
-		{ 100, ETHTOOL_LINK_MODE_100baseT_Half_BIT, ETHTOOL_LINK_MODE_100baseT_Full_BIT },
-		{ 1000, ETHTOOL_LINK_MODE_1000baseT_Half_BIT, ETHTOOL_LINK_MODE_1000baseT_Full_BIT },
-	};
-	uint32_t adv;
-	int i;
 
+	memset(&ecmd, 0, sizeof(ecmd));
+	ecmd.cmd = ETHTOOL_GGRO;
+	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
+
+	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr))
+		return -1;
+
+	return ecmd.data;
+}
+
+static void
+system_set_ethtool_gro(struct device *dev, struct device_settings *s)
+{
+	struct ethtool_value ecmd;
+	struct ifreq ifr = {
+		.ifr_data = (caddr_t)&ecmd,
+	};
+
+	memset(&ecmd, 0, sizeof(ecmd));
+	ecmd.cmd = ETHTOOL_SGRO;
+	ecmd.data = s->gro;
+	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
+
+	ioctl(sock_ioctl, SIOCETHTOOL, &ifr);
+}
+
+static void
+system_set_ethtool_pause(struct device *dev, struct device_settings *s)
+{
+	struct ethtool_pauseparam pp;
+	struct ifreq ifr = {
+		.ifr_data = (caddr_t)&pp,
+	};
+
+	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
+	memset(&pp, 0, sizeof(pp));
+	pp.cmd = ETHTOOL_GPAUSEPARAM;
+	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr))
+		return;
+
+	if (s->flags & DEV_OPT_RXPAUSE || s->flags & DEV_OPT_TXPAUSE) {
+		pp.autoneg = AUTONEG_DISABLE;
+
+		if (s->flags & DEV_OPT_PAUSE) {
+			if (s->flags & DEV_OPT_RXPAUSE)
+				pp.rx_pause = s->rxpause && s->pause;
+			else
+				pp.rx_pause = s->pause;
+
+			if (s->flags & DEV_OPT_TXPAUSE)
+				pp.tx_pause = s->txpause && s->pause;
+			else
+				pp.tx_pause = s->pause;
+		} else {
+			if (s->flags & DEV_OPT_RXPAUSE)
+				pp.rx_pause = s->rxpause;
+
+			if (s->flags & DEV_OPT_TXPAUSE)
+				pp.tx_pause = s->txpause;
+		}
+
+		if (s->flags & DEV_OPT_ASYM_PAUSE &&
+		    !s->asym_pause && (pp.rx_pause != pp.tx_pause))
+			pp.rx_pause = pp.tx_pause = false;
+	} else {
+		pp.autoneg = AUTONEG_ENABLE;
+		/* Pause and Asym_Pause advertising bits will be set via
+		 * ETHTOOL_SLINKSETTINGS in system_set_ethtool_settings()
+		 */
+	}
+
+	pp.cmd = ETHTOOL_SPAUSEPARAM;
+	ioctl(sock_ioctl, SIOCETHTOOL, &ifr);
+}
+
+static void
+system_set_ethtool_eee_settings(struct device *dev, struct device_settings *s)
+{
+	struct ethtool_eee eeecmd;
+	struct ifreq ifr = {
+		.ifr_data = (caddr_t)&eeecmd,
+	};
+
+	memset(&eeecmd, 0, sizeof(eeecmd));
+	eeecmd.cmd = ETHTOOL_SEEE;
+	eeecmd.eee_enabled = s->eee;
 	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
 
 	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr) != 0)
+		netifd_log_message(L_WARNING, "cannot set eee %d for device %s", s->eee, dev->ifname);
+}
+
+static void
+system_set_ethtool_settings(struct device *dev, struct device_settings *s)
+{
+	struct {
+		struct ethtool_link_settings req;
+		__u32 link_mode_data[3 * 127];
+	} ecmd;
+	struct ifreq ifr = {
+		.ifr_data = (caddr_t)&ecmd,
+	};
+	size_t i;
+	__s8 nwords;
+	__u32 *supported, *advertising;
+
+	system_set_ethtool_pause(dev, s);
+
+	if (s->flags & DEV_OPT_EEE)
+		system_set_ethtool_eee_settings(dev, s);
+
+	memset(&ecmd, 0, sizeof(ecmd));
+	ecmd.req.cmd = ETHTOOL_GLINKSETTINGS;
+	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
+
+	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr) < 0 ||
+	    ecmd.req.link_mode_masks_nwords >= 0 ||
+	    ecmd.req.cmd != ETHTOOL_GLINKSETTINGS)
 		return;
 
-	adv = ecmd.supported;
-	for (i = 0; i < ARRAY_SIZE(speed_mask); i++) {
-		if (s->flags & DEV_OPT_DUPLEX) {
-			int bit = s->duplex ? speed_mask[i].bit_half : speed_mask[i].bit_full;
-			adv &= ~(1 << bit);
-		}
+	ecmd.req.link_mode_masks_nwords = -ecmd.req.link_mode_masks_nwords;
 
+	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr) < 0 ||
+	    ecmd.req.link_mode_masks_nwords <= 0 ||
+	    ecmd.req.cmd != ETHTOOL_GLINKSETTINGS)
+		return;
+
+	nwords = ecmd.req.link_mode_masks_nwords;
+	supported = &ecmd.link_mode_data[0];
+	advertising = &ecmd.link_mode_data[nwords];
+	memcpy(advertising, supported, sizeof(__u32) * nwords);
+
+	for (i = 0; i < ARRAY_SIZE(ethtool_modes); i++) {
+		if (s->flags & DEV_OPT_DUPLEX) {
+			if (s->duplex)
+				ethtool_link_mode_clear_bit(nwords, ethtool_modes[i].bit_half, advertising);
+			else
+				ethtool_link_mode_clear_bit(nwords, ethtool_modes[i].bit_full, advertising);
+		}
 		if (!(s->flags & DEV_OPT_SPEED) ||
-		    s->speed == speed_mask[i].speed)
+		    s->speed == ethtool_modes[i].speed)
 			continue;
 
-		adv &= ~(1 << speed_mask[i].bit_full);
-		adv &= ~(1 << speed_mask[i].bit_half);
+		ethtool_link_mode_clear_bit(nwords, ethtool_modes[i].bit_full, advertising);
+		ethtool_link_mode_clear_bit(nwords, ethtool_modes[i].bit_half, advertising);
 	}
 
+	if (s->flags & DEV_OPT_PAUSE)
+		if (!s->pause)
+			ethtool_link_mode_clear_bit(nwords, ETHTOOL_LINK_MODE_Pause_BIT, advertising);
 
-	if (ecmd.autoneg && ecmd.advertising == adv)
-		return;
+	if (s->flags & DEV_OPT_ASYM_PAUSE)
+		if (!s->asym_pause)
+			ethtool_link_mode_clear_bit(nwords, ETHTOOL_LINK_MODE_Asym_Pause_BIT, advertising);
 
-	ecmd.autoneg = 1;
-	ecmd.advertising = adv;
-	ecmd.cmd = ETHTOOL_SSET;
+	if (s->flags & DEV_OPT_AUTONEG) {
+		ecmd.req.autoneg = s->autoneg ? AUTONEG_ENABLE : AUTONEG_DISABLE;
+		if (!s->autoneg) {
+			if (s->flags & DEV_OPT_SPEED)
+				ecmd.req.speed = s->speed;
+
+			if (s->flags & DEV_OPT_DUPLEX)
+				ecmd.req.duplex = s->duplex ? DUPLEX_FULL : DUPLEX_HALF;
+		}
+	}
+
+	ecmd.req.cmd = ETHTOOL_SLINKSETTINGS;
 	ioctl(sock_ioctl, SIOCETHTOOL, &ifr);
+}
+
+static void
+system_set_ethtool_settings_after_up(struct device *dev, struct device_settings *s)
+{
+	if (s->flags & DEV_OPT_GRO)
+		system_set_ethtool_gro(dev, s);
 }
 
 void
@@ -1728,6 +2161,7 @@ system_if_get_settings(struct device *dev, struct device_settings *s)
 {
 	struct ifreq ifr;
 	char buf[10];
+	int ret;
 
 	memset(&ifr, 0, sizeof(ifr));
 	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
@@ -1852,6 +2286,20 @@ system_if_get_settings(struct device *dev, struct device_settings *s)
 		s->flags |= DEV_OPT_ARP_ACCEPT;
 	}
 
+	ret = system_get_ethtool_gro(dev);
+	if (ret >= 0) {
+		s->gro = ret;
+		s->flags |= DEV_OPT_GRO;
+	}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
+	ret = system_if_get_master_ifindex(dev);
+	if (ret >= 0) {
+		s->master_ifindex = ret;
+		s->flags |= DEV_OPT_MASTER;
+	}
+#endif
+
 	if (!system_get_ip_forwarding(dev, buf, sizeof(buf))) {
 		s->ip_forwarding = strtoul(buf, NULL, 0);
 		s->flags |= DEV_OPT_IP_FORWARDING;
@@ -1880,6 +2328,16 @@ system_if_apply_settings(struct device *dev, struct device_settings *s, uint64_t
 	char buf[12];
 
 	apply_mask &= s->flags;
+
+	if (apply_mask & DEV_OPT_MASTER) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
+		system_set_master(dev, s->master_ifindex);
+		if (!(apply_mask & (DEV_OPT_MACADDR | DEV_OPT_DEFAULT_MACADDR)) || dev->external)
+			system_refresh_orig_macaddr(dev, &dev->orig_settings);
+#else
+		netifd_log_message(L_WARNING, "%s Your kernel is older than linux 6.1.0, changing DSA port conduit is not supported!", dev->ifname);
+#endif
+	}
 
 	memset(&ifr, 0, sizeof(ifr));
 	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
@@ -1988,6 +2446,11 @@ system_if_apply_settings(struct device *dev, struct device_settings *s, uint64_t
 	system_set_ethtool_settings(dev, s);
 }
 
+void system_if_apply_settings_after_up(struct device *dev, struct device_settings *s)
+{
+	system_set_ethtool_settings_after_up(dev, s);
+}
+
 int system_if_up(struct device *dev)
 {
 	return system_if_flags(dev->ifname, IFF_UP, 0);
@@ -2004,10 +2467,6 @@ struct if_check_data {
 	int ret;
 };
 
-#ifndef IFF_LOWER_UP
-#define IFF_LOWER_UP	0x10000
-#endif
-
 static int cb_if_check_valid(struct nl_msg *msg, void *arg)
 {
 	struct nlmsghdr *nh = nlmsg_hdr(msg);
@@ -2017,10 +2476,7 @@ static int cb_if_check_valid(struct nl_msg *msg, void *arg)
 	if (nh->nlmsg_type != RTM_NEWLINK)
 		return NL_SKIP;
 
-	if (chk->dev->type == &simple_device_type)
-		device_set_present(chk->dev, ifi->ifi_index > 0 ? true : false);
-	device_set_link(chk->dev, ifi->ifi_flags & IFF_LOWER_UP ? true : false);
-
+	system_device_update_state(chk->dev, ifi->ifi_flags);
 	return NL_OK;
 }
 
@@ -2225,11 +2681,8 @@ int system_bridge_vlan_check(struct device *dev, char *ifname)
 		}
 	}
 
-	goto out;
-
 free:
 	nlmsg_free(msg);
-out:
 	nl_cb_put(cb);
 	return data.ret;
 }
@@ -2344,45 +2797,6 @@ read_uint64_file(int dir_fd, const char *file, uint64_t *val)
 	return ret;
 }
 
-/* Assume advertised flags == supported flags */
-static const struct {
-	uint32_t mask;
-	const char *name;
-} ethtool_link_modes[] = {
-	{ ADVERTISED_10baseT_Half, "10baseT-H" },
-	{ ADVERTISED_10baseT_Full, "10baseT-F" },
-	{ ADVERTISED_100baseT_Half, "100baseT-H" },
-	{ ADVERTISED_100baseT_Full, "100baseT-F" },
-	{ ADVERTISED_1000baseT_Half, "1000baseT-H" },
-	{ ADVERTISED_1000baseT_Full, "1000baseT-F" },
-	{ ADVERTISED_1000baseKX_Full, "1000baseKX-F" },
-	{ ADVERTISED_2500baseX_Full, "2500baseX-F" },
-	{ ADVERTISED_10000baseT_Full, "10000baseT-F" },
-	{ ADVERTISED_10000baseKX4_Full, "10000baseKX4-F" },
-	{ ADVERTISED_10000baseKR_Full, "10000baseKR-F" },
-	{ ADVERTISED_20000baseMLD2_Full, "20000baseMLD2-F" },
-	{ ADVERTISED_20000baseKR2_Full, "20000baseKR2-F" },
-	{ ADVERTISED_40000baseKR4_Full, "40000baseKR4-F" },
-	{ ADVERTISED_40000baseCR4_Full, "40000baseCR4-F" },
-	{ ADVERTISED_40000baseSR4_Full, "40000baseSR4-F" },
-	{ ADVERTISED_40000baseLR4_Full, "40000baseLR4-F" },
-#ifdef ADVERTISED_56000baseKR4_Full
-	{ ADVERTISED_56000baseKR4_Full, "56000baseKR4-F" },
-	{ ADVERTISED_56000baseCR4_Full, "56000baseCR4-F" },
-	{ ADVERTISED_56000baseSR4_Full, "56000baseSR4-F" },
-	{ ADVERTISED_56000baseLR4_Full, "56000baseLR4-F" },
-#endif
-};
-
-static void system_add_link_modes(struct blob_buf *b, __u32 mask)
-{
-	int i;
-	for (i = 0; i < ARRAY_SIZE(ethtool_link_modes); i++) {
-		if (mask & ethtool_link_modes[i].mask)
-			blobmsg_add_string(b, NULL, ethtool_link_modes[i].name);
-	}
-}
-
 bool
 system_if_force_external(const char *ifname)
 {
@@ -2394,7 +2808,7 @@ system_if_force_external(const char *ifname)
 static const char *
 system_netdevtype_name(unsigned short dev_type)
 {
-	unsigned int i;
+	size_t i;
 
 	for (i = 0; i < ARRAY_SIZE(netdev_types); i++) {
 		if (netdev_types[i].id == dev_type)
@@ -2478,7 +2892,8 @@ ethtool_feature_index(const char *ifname, const char *keyname)
 {
 	struct ethtool_gstrings *feature_names;
 	struct ifreq ifr = { 0 };
-	int32_t n_features, i;
+	int32_t n_features;
+	uint32_t i;
 
 	n_features = ethtool_feature_count(ifname);
 
@@ -2556,40 +2971,212 @@ ethtool_feature_value(const char *ifname, const char *keyname)
 	return active;
 }
 
+static void
+system_add_link_mode_name(struct blob_buf *b, int i, bool half)
+{
+	char *buf;
+
+	/* allocate string buffer large enough for the mode name and a suffix
+	 * "-F" or "-H" indicating full duplex or half duplex.
+	 */
+	buf = blobmsg_alloc_string_buffer(b, NULL, strlen(ethtool_modes[i].name) + 3);
+	if (!buf)
+		return;
+
+	strcpy(buf, ethtool_modes[i].name);
+	if (half)
+		strcat(buf, "-H");
+	else
+		strcat(buf, "-F");
+
+	blobmsg_add_string_buffer(b);
+}
+
+static void
+system_add_link_modes(__s8 nwords, struct blob_buf *b, __u32 *mask)
+{
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(ethtool_modes); i++) {
+		if (ethtool_link_mode_test_bit(nwords, ethtool_modes[i].bit_half, mask))
+			system_add_link_mode_name(b, i, true);
+
+		if (ethtool_link_mode_test_bit(nwords, ethtool_modes[i].bit_full, mask))
+			system_add_link_mode_name(b, i, false);
+	}
+}
+
+static void
+system_add_pause_modes(__s8 nwords, struct blob_buf *b, __u32 *mask)
+{
+	if (ethtool_link_mode_test_bit(nwords, ETHTOOL_LINK_MODE_Pause_BIT, mask))
+		blobmsg_add_string(b, NULL, "pause");
+
+	if (ethtool_link_mode_test_bit(nwords, ETHTOOL_LINK_MODE_Asym_Pause_BIT, mask))
+		blobmsg_add_string(b, NULL, "asym_pause");
+}
+
+
+static void
+system_add_ethtool_pause_an(struct blob_buf *b, __s8 nwords,
+			    __u32 *advertising, __u32 *lp_advertising)
+{
+	bool an_rx = false, an_tx = false;
+	void *d;
+
+	d = blobmsg_open_array(b, "negotiated");
+
+	/* Work out negotiated pause frame usage per
+	 * IEEE 802.3-2005 table 28B-3.
+	 */
+	if (ethtool_link_mode_test_bit(nwords,
+				       ETHTOOL_LINK_MODE_Pause_BIT,
+				       advertising) &&
+	    ethtool_link_mode_test_bit(nwords,
+				       ETHTOOL_LINK_MODE_Pause_BIT,
+				       lp_advertising)) {
+		an_tx = true;
+		an_rx = true;
+	} else if (ethtool_link_mode_test_bit(nwords,
+					      ETHTOOL_LINK_MODE_Asym_Pause_BIT,
+					      advertising) &&
+		   ethtool_link_mode_test_bit(nwords,
+					      ETHTOOL_LINK_MODE_Asym_Pause_BIT,
+					      lp_advertising)) {
+		if (ethtool_link_mode_test_bit(nwords,
+					       ETHTOOL_LINK_MODE_Pause_BIT,
+					       advertising))
+			an_rx = true;
+		else if (ethtool_link_mode_test_bit(nwords,
+						    ETHTOOL_LINK_MODE_Pause_BIT,
+						    lp_advertising))
+			an_tx = true;
+	}
+	if (an_tx)
+		blobmsg_add_string(b, NULL, "rx");
+
+	if (an_rx)
+		blobmsg_add_string(b, NULL, "tx");
+
+	blobmsg_close_array(b, d);
+}
+
+static void
+system_get_ethtool_pause(struct device *dev, bool *rx_pause, bool *tx_pause, bool *pause_autoneg)
+{
+	struct ethtool_pauseparam pp;
+	struct ifreq ifr = {
+		.ifr_data = (caddr_t)&pp,
+	};
+
+	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
+	memset(&pp, 0, sizeof(pp));
+	pp.cmd = ETHTOOL_GPAUSEPARAM;
+
+	/* may fail */
+	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr) == -1) {
+		*pause_autoneg = true;
+		return;
+	}
+
+	*rx_pause = pp.rx_pause;
+	*tx_pause = pp.tx_pause;
+	*pause_autoneg = pp.autoneg;
+}
+
 int
 system_if_dump_info(struct device *dev, struct blob_buf *b)
 {
-	struct ethtool_cmd ecmd;
-	struct ifreq ifr;
+	__u32 *supported, *advertising, *lp_advertising;
+	bool rx_pause, tx_pause, pause_autoneg;
+	struct {
+		struct ethtool_link_settings req;
+		__u32 link_mode_data[3 * 127];
+	} ecmd;
+	struct ifreq ifr = {
+		.ifr_data = (caddr_t)&ecmd,
+	};
+	__s8 nwords;
+	void *c, *d;
 	char *s;
-	void *c;
+
+	system_get_ethtool_pause(dev, &rx_pause, &tx_pause, &pause_autoneg);
 
 	memset(&ecmd, 0, sizeof(ecmd));
-	memset(&ifr, 0, sizeof(ifr));
+	ecmd.req.cmd = ETHTOOL_GLINKSETTINGS;
 	strncpy(ifr.ifr_name, dev->ifname, sizeof(ifr.ifr_name) - 1);
-	ifr.ifr_data = (caddr_t) &ecmd;
-	ecmd.cmd = ETHTOOL_GSET;
 
-	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr) == 0) {
-		c = blobmsg_open_array(b, "link-advertising");
-		system_add_link_modes(b, ecmd.advertising);
-		blobmsg_close_array(b, c);
+	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr) < 0 ||
+	    ecmd.req.link_mode_masks_nwords >= 0 ||
+	    ecmd.req.cmd != ETHTOOL_GLINKSETTINGS)
+		return -EOPNOTSUPP;
 
-		c = blobmsg_open_array(b, "link-partner-advertising");
-		system_add_link_modes(b, ecmd.lp_advertising);
-		blobmsg_close_array(b, c);
+	ecmd.req.link_mode_masks_nwords = -ecmd.req.link_mode_masks_nwords;
 
-		c = blobmsg_open_array(b, "link-supported");
-		system_add_link_modes(b, ecmd.supported);
-		blobmsg_close_array(b, c);
+	if (ioctl(sock_ioctl, SIOCETHTOOL, &ifr) < 0 ||
+	    ecmd.req.link_mode_masks_nwords <= 0 ||
+	    ecmd.req.cmd != ETHTOOL_GLINKSETTINGS)
+		return -EIO;
 
-		s = blobmsg_alloc_string_buffer(b, "speed", 8);
-		snprintf(s, 8, "%d%c", ethtool_cmd_speed(&ecmd),
-			ecmd.duplex == DUPLEX_HALF ? 'H' : 'F');
+	nwords = ecmd.req.link_mode_masks_nwords;
+	supported = &ecmd.link_mode_data[0];
+	advertising = &ecmd.link_mode_data[nwords];
+	lp_advertising = &ecmd.link_mode_data[2 * nwords];
+
+	c = blobmsg_open_array(b, "link-advertising");
+	system_add_link_modes(nwords, b, advertising);
+	blobmsg_close_array(b, c);
+
+	c = blobmsg_open_array(b, "link-partner-advertising");
+	system_add_link_modes(nwords, b, lp_advertising);
+	blobmsg_close_array(b, c);
+
+	c = blobmsg_open_array(b, "link-supported");
+	system_add_link_modes(nwords, b, supported);
+	blobmsg_close_array(b, c);
+
+	if (ethtool_validate_speed(ecmd.req.speed) &&
+	    (ecmd.req.speed != (__u32)SPEED_UNKNOWN) &&
+	    (ecmd.req.speed != 0)) {
+		s = blobmsg_alloc_string_buffer(b, "speed", 10);
+		snprintf(s, 8, "%d%c", ecmd.req.speed,
+			ecmd.req.duplex == DUPLEX_HALF ? 'H' : 'F');
 		blobmsg_add_string_buffer(b);
-
-		blobmsg_add_u8(b, "autoneg", !!ecmd.autoneg);
 	}
+	blobmsg_add_u8(b, "autoneg", !!ecmd.req.autoneg);
+
+	c = blobmsg_open_table(b, "flow-control");
+	blobmsg_add_u8(b, "autoneg", pause_autoneg);
+
+	d = blobmsg_open_array(b, "supported");
+	system_add_pause_modes(nwords, b, supported);
+	blobmsg_close_array(b, d);
+
+	if (pause_autoneg) {
+		d = blobmsg_open_array(b, "link-advertising");
+		system_add_pause_modes(nwords, b, advertising);
+		blobmsg_close_array(b, d);
+	}
+
+	d = blobmsg_open_array(b, "link-partner-advertising");
+	system_add_pause_modes(nwords, b, lp_advertising);
+	blobmsg_close_array(b, d);
+
+	if (pause_autoneg) {
+		system_add_ethtool_pause_an(b, nwords, advertising,
+					    lp_advertising);
+	} else {
+		d = blobmsg_open_array(b, "selected");
+		if (rx_pause)
+			blobmsg_add_string(b, NULL, "rx");
+
+		if (tx_pause)
+			blobmsg_add_string(b, NULL, "tx");
+
+		blobmsg_close_array(b, d);
+	}
+
+	blobmsg_close_table(b, c);
 
 	blobmsg_add_u8(b, "hw-tc-offload",
 		ethtool_feature_value(dev->ifname, "hw-tc-offload"));
@@ -2613,7 +3200,7 @@ system_if_dump_stats(struct device *dev, struct blob_buf *b)
 		"rx_fifo_errors", "tx_carrier_errors",
 	};
 	int stats_dir;
-	int i;
+	size_t i;
 	uint64_t val = 0;
 
 	stats_dir = open(dev_sysfs_path(dev->ifname, "statistics"), O_DIRECTORY);
@@ -2801,6 +3388,9 @@ static int system_rt(struct device *dev, struct device_route *route, int cmd)
 		}
 	}
 
+	if (route->flags & DEVROUTE_NODEV)
+		dev = NULL;
+
 	msg = nlmsg_alloc_simple(cmd, flags);
 	if (!msg)
 		return -1;
@@ -2863,7 +3453,8 @@ int system_del_route(struct device *dev, struct device_route *route)
 int system_flush_routes(void)
 {
 	const char *names[] = { "ipv4", "ipv6" };
-	int fd, i;
+	size_t i;
+	int fd;
 
 	for (i = 0; i < ARRAY_SIZE(names); i++) {
 		snprintf(dev_buf, sizeof(dev_buf), "%s/sys/net/%s/route/flush", proc_path, names[i]);
@@ -3081,6 +3672,9 @@ static int system_iprule(struct iprule *rule, int cmd)
 
 	if (rule->flags & IPRULE_GOTO)
 		nla_put_u32(msg, FRA_GOTO, rule->gotoid);
+
+	if (rule->flags & IPRULE_IPPROTO)
+		nla_put_u32(msg, FRA_IP_PROTO, rule->ipproto);
 
 	return system_rtnl_call(msg);
 }
@@ -3910,7 +4504,7 @@ static int system_add_vxlan(const char *name, const unsigned int link, struct bl
 
 	ret = system_rtnl_call(msg);
 	if (ret)
-		D(SYSTEM, "Error adding vxlan '%s': %d\n", name, ret);
+		D(SYSTEM, "Error adding vxlan '%s': %d", name, ret);
 
 	return ret;
 

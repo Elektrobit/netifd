@@ -228,7 +228,7 @@ proto_shell_handler(struct interface_proto_state *proto,
 		}
 	}
 
-	D(INTERFACE, "run %s for interface '%s'\n", action, proto->iface->name);
+	D(INTERFACE, "run %s for interface '%s'", action, proto->iface->name);
 	config = blobmsg_format_json(state->config, true);
 	if (!config)
 		return -1;
@@ -269,7 +269,7 @@ proto_shell_if_down_cb(struct interface_user *dep, struct interface *iface,
 	struct proto_shell_dependency *pdep;
 	struct proto_shell_state *state;
 
-	if (ev == IFEV_UP || ev == IFEV_UPDATE)
+	if (ev != IFEV_UP_FAILED && ev != IFEV_DOWN && ev != IFEV_FREE)
 		return;
 
 	pdep = container_of(dep, struct proto_shell_dependency, dep);
@@ -401,11 +401,11 @@ proto_shell_parse_route_list(struct interface *iface, struct blob_attr *attr,
 			     bool v6)
 {
 	struct blob_attr *cur;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_TABLE) {
-			DPRINTF("Ignore wrong route type: %d\n", blobmsg_type(cur));
+			D(INTERFACE, "Ignore wrong route type: %d", blobmsg_type(cur));
 			continue;
 		}
 
@@ -418,11 +418,11 @@ proto_shell_parse_neighbor_list(struct interface *iface, struct blob_attr *attr,
 				bool v6)
 {
 	struct blob_attr *cur;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_TABLE) {
-			DPRINTF("Ignore wrong neighbor type: %d\n", blobmsg_type(cur));
+			D(INTERFACE, "Ignore wrong neighbor type: %d", blobmsg_type(cur));
 			continue;
 		}
 
@@ -434,7 +434,7 @@ static void
 proto_shell_parse_data(struct interface *iface, struct blob_attr *attr)
 {
 	struct blob_attr *cur;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem)
 		interface_add_data(iface, cur);
@@ -597,7 +597,7 @@ fill_string_list(struct blob_attr *attr, char **argv, int max)
 {
 	struct blob_attr *cur;
 	int argc = 0;
-	int rem;
+	size_t rem;
 
 	if (!attr)
 		goto out;
@@ -671,7 +671,7 @@ proto_shell_notify_error(struct proto_shell_state *state, struct blob_attr **tb)
 	struct blob_attr *cur;
 	char *data[16];
 	int n_data = 0;
-	int rem;
+	size_t rem;
 
 	if (!tb[NOTIFY_ERROR])
 		return UBUS_STATUS_INVALID_ARGUMENT;
@@ -825,7 +825,7 @@ proto_shell_checkup_timeout_cb(struct uloop_timeout *timeout)
 	if (iface->state == IFS_UP)
 		return;
 
-	D(INTERFACE, "Interface '%s' is not up after %d sec\n",
+	D(INTERFACE, "Interface '%s' is not up after %d sec",
 			iface->name, state->checkup_interval);
 	proto_shell_handler(proto, PROTO_CMD_TEARDOWN, false);
 }
@@ -912,6 +912,10 @@ proto_shell_add_handler(const char *script, const char *name, json_object *obj)
 	if (tmp && json_object_get_boolean(tmp))
 		handler->proto.flags |= PROTO_FLAG_NODEV;
 
+	tmp = json_get_field(obj, "no-device-config", json_type_boolean);
+	if (tmp && json_object_get_boolean(tmp))
+		handler->proto.flags |= PROTO_FLAG_NODEV_CONFIG;
+
 	tmp = json_get_field(obj, "no-proto-task", json_type_boolean);
 	if (tmp && json_object_get_boolean(tmp))
 		handler->proto.flags |= PROTO_FLAG_NO_TASK;
@@ -936,7 +940,7 @@ proto_shell_add_handler(const char *script, const char *name, json_object *obj)
 	if (config)
 		handler->config_buf = netifd_handler_parse_config(&handler->config, config);
 
-	DPRINTF("Add handler for script %s: %s\n", script, proto->name);
+	D(INTERFACE, "Add handler for script %s: %s", script, proto->name);
 	add_proto_handler(proto);
 }
 

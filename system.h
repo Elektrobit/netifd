@@ -23,75 +23,6 @@
 #include "iprule.h"
 #include "utils.h"
 
-struct netdev_type {
-	unsigned short id;
-	const char *name;
-};
-
-static const struct netdev_type netdev_types[] = {
-	{ARPHRD_NETROM, "netrom"},
-	{ARPHRD_ETHER, "ethernet"},
-	{ARPHRD_EETHER, "eethernet"},
-	{ARPHRD_AX25, "ax25"},
-	{ARPHRD_PRONET, "pronet"},
-	{ARPHRD_CHAOS, "chaos"},
-	{ARPHRD_IEEE802, "ieee802"},
-	{ARPHRD_ARCNET, "arcnet"},
-	{ARPHRD_APPLETLK, "appletlk"},
-	{ARPHRD_DLCI, "dlci"},
-	{ARPHRD_ATM, "atm"},
-	{ARPHRD_METRICOM, "metricom"},
-	{ARPHRD_IEEE1394, "ieee1394"},
-	{ARPHRD_EUI64, "eui64"},
-	{ARPHRD_INFINIBAND, "infiniband"},
-	{ARPHRD_SLIP, "slip"},
-	{ARPHRD_CSLIP, "cslip"},
-	{ARPHRD_SLIP6, "slip6"},
-	{ARPHRD_CSLIP6, "cslip6"},
-	{ARPHRD_RSRVD, "rsrvd"},
-	{ARPHRD_ADAPT, "adapt"},
-	{ARPHRD_ROSE, "rose"},
-	{ARPHRD_X25, "x25"},
-	{ARPHRD_HWX25, "hwx25"},
-	{ARPHRD_PPP, "ppp"},
-	{ARPHRD_CISCO, "cisco"},
-	{ARPHRD_LAPB, "lapb"},
-	{ARPHRD_DDCMP, "ddcmp"},
-	{ARPHRD_RAWHDLC, "rawhdlc"},
-	{ARPHRD_TUNNEL, "tunnel"},
-	{ARPHRD_TUNNEL6, "tunnel6"},
-	{ARPHRD_FRAD, "frad"},
-	{ARPHRD_SKIP, "skip"},
-	{ARPHRD_LOOPBACK, "loopback"},
-	{ARPHRD_LOCALTLK, "localtlk"},
-	{ARPHRD_FDDI, "fddi"},
-	{ARPHRD_BIF, "bif"},
-	{ARPHRD_SIT, "sit"},
-	{ARPHRD_IPDDP, "ipddp"},
-	{ARPHRD_IPGRE, "ipgre"},
-	{ARPHRD_PIMREG,"pimreg"},
-	{ARPHRD_HIPPI, "hippi"},
-	{ARPHRD_ASH, "ash"},
-	{ARPHRD_ECONET, "econet"},
-	{ARPHRD_IRDA, "irda"},
-	{ARPHRD_FCPP, "fcpp"},
-	{ARPHRD_FCAL, "fcal"},
-	{ARPHRD_FCPL, "fcpl"},
-	{ARPHRD_FCFABRIC, "fcfabric"},
-	{ARPHRD_IEEE80211, "ieee80211"},
-	{ARPHRD_IEEE80211_PRISM, "ie80211-prism"},
-	{ARPHRD_IEEE80211_RADIOTAP, "ieee80211-radiotap"},
-#ifdef ARPHRD_PHONET
-	{ARPHRD_PHONET, "phonet"},
-#endif
-#ifdef ARPHRD_PHONET_PIPE
-	{ARPHRD_PHONET_PIPE, "phonet-pipe"},
-#endif
-	{ARPHRD_IEEE802154, "ieee802154"},
-	{ARPHRD_VOID, "void"},
-	{ARPHRD_NONE, "none"}
-};
-
 enum tunnel_param {
 	TUNNEL_ATTR_TYPE,
 	TUNNEL_ATTR_REMOTE,
@@ -324,7 +255,7 @@ int system_bridge_addbr(struct device *bridge, struct bridge_config *cfg);
 int system_bridge_delbr(struct device *bridge);
 int system_bridge_addif(struct device *bridge, struct device *dev);
 int system_bridge_delif(struct device *bridge, struct device *dev);
-int system_bridge_vlan(const char *iface, uint16_t vid, bool add, unsigned int vflags);
+int system_bridge_vlan(const char *iface, uint16_t vid, int16_t vid_end, bool add, unsigned int vflags);
 int system_bridge_vlan_check(struct device *dev, char *ifname);
 void system_bridge_set_stp_state(struct device *dev, bool val);
 
@@ -356,6 +287,7 @@ struct device *system_if_get_parent(struct device *dev);
 bool system_if_force_external(const char *ifname);
 void system_if_apply_settings(struct device *dev, struct device_settings *s,
 			      uint64_t apply_mask);
+void system_if_apply_settings_after_up(struct device *dev, struct device_settings *s);
 
 int system_add_address(struct device *dev, struct device_addr *addr);
 int system_del_address(struct device *dev, struct device_addr *addr);

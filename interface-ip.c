@@ -101,7 +101,7 @@ static struct uloop_timeout valid_until_timeout;
 static void
 clear_if_addr(union if_addr *a, int mask)
 {
-	int m_bytes = (mask + 7) / 8;
+	size_t m_bytes = (mask + 7) / 8;
 	uint8_t m_clear = (1 << (m_bytes * 8 - mask)) - 1;
 	uint8_t *p = (uint8_t *) a;
 
@@ -407,6 +407,7 @@ interface_ip_add_route(struct interface *iface, struct blob_attr *attr, bool v6)
 	struct blob_attr *tb[__ROUTE_MAX], *cur;
 	struct device_route *route;
 	int af = v6 ? AF_INET6 : AF_INET;
+	bool no_device = false;
 
 	blobmsg_parse(route_attr, __ROUTE_MAX, tb, blobmsg_data(attr), blobmsg_data_len(attr));
 
@@ -414,10 +415,13 @@ interface_ip_add_route(struct interface *iface, struct blob_attr *attr, bool v6)
 		return;
 
 	if (!iface) {
-		if ((cur = tb[ROUTE_INTERFACE]) == NULL)
-			return;
+		if ((cur = tb[ROUTE_INTERFACE]) == NULL) {
+			iface = vlist_find(&interfaces, "loopback", iface, node);
+			no_device = true;
+		} else {
+			iface = vlist_find(&interfaces, blobmsg_data(cur), iface, node);
+		}
 
-		iface = vlist_find(&interfaces, blobmsg_data(cur), iface, node);
 		if (!iface)
 			return;
 
@@ -440,14 +444,18 @@ interface_ip_add_route(struct interface *iface, struct blob_attr *attr, bool v6)
 
 	if ((cur = tb[ROUTE_TARGET]) != NULL) {
 		if (!parse_ip_and_netmask(af, blobmsg_data(cur), &route->addr, &route->mask)) {
-			DPRINTF("Failed to parse route target: %s\n", (char *) blobmsg_data(cur));
+			D(INTERFACE, "Failed to parse route target: %s", (char *) blobmsg_data(cur));
 			goto error;
 		}
+
+		/* Mask out IPv4 host bits to avoid "Invalid prefix for given prefix length" */
+		if (af == AF_INET && route->mask < 32)
+			clear_if_addr(&route->addr, route->mask);
 	}
 
 	if ((cur = tb[ROUTE_GATEWAY]) != NULL) {
 		if (!inet_pton(af, blobmsg_data(cur), &route->nexthop)) {
-			DPRINTF("Failed to parse route gateway: %s\n", (char *) blobmsg_data(cur));
+			D(INTERFACE, "Failed to parse route gateway: %s", (char *) blobmsg_data(cur));
 			goto error;
 		}
 	}
@@ -476,7 +484,7 @@ interface_ip_add_route(struct interface *iface, struct blob_attr *attr, bool v6)
 		const char *mask = strtok_r(NULL, "/", &saveptr);
 
 		if (!addr || inet_pton(af, addr, &route->source) < 1) {
-			DPRINTF("Failed to parse route source: %s\n", addr ? addr : "NULL");
+			D(INTERFACE, "Failed to parse route source: %s", addr ? addr : "NULL");
 			goto error;
 		}
 
@@ -488,7 +496,7 @@ interface_ip_add_route(struct interface *iface, struct blob_attr *attr, bool v6)
 
 	if ((cur = tb[ROUTE_TABLE]) != NULL) {
 		if (!system_resolve_rt_table(blobmsg_data(cur), &route->table)) {
-			DPRINTF("Failed to resolve routing table: %s\n", (char *) blobmsg_data(cur));
+			D(INTERFACE, "Failed to resolve routing table: %s", (char *) blobmsg_data(cur));
 			goto error;
 		}
 
@@ -509,7 +517,7 @@ interface_ip_add_route(struct interface *iface, struct blob_attr *attr, bool v6)
 
 	if ((cur = tb[ROUTE_TYPE]) != NULL) {
 		if (!system_resolve_rt_type(blobmsg_data(cur), &route->type)) {
-			DPRINTF("Failed to resolve routing type: %s\n", (char *) blobmsg_data(cur));
+			D(INTERFACE, "Failed to resolve routing type: %s", (char *) blobmsg_data(cur));
 			goto error;
 		}
 		route->flags |= DEVROUTE_TYPE;
@@ -517,13 +525,17 @@ interface_ip_add_route(struct interface *iface, struct blob_attr *attr, bool v6)
 
 	if ((cur = tb[ROUTE_PROTO]) != NULL) {
 		if (!system_resolve_rt_proto(blobmsg_data(cur), &route->proto)) {
-			DPRINTF("Failed to resolve proto type: %s\n", (char *) blobmsg_data(cur));
+			D(INTERFACE, "Failed to resolve proto type: %s", (char *) blobmsg_data(cur));
 			goto error;
 		}
 		route->flags |= DEVROUTE_PROTO;
 	}
 
-	interface_set_route_info(iface, route);
+	if (no_device)
+		route->flags |= DEVROUTE_NODEV;
+	else
+		interface_set_route_info(iface, route);
+
 	vlist_add(&ip->route, &route->node, route);
 	return;
 
@@ -1427,7 +1439,7 @@ interface_add_dns_server(struct interface_ip_settings *ip, const char *str)
 	return;
 
 add:
-	D(INTERFACE, "Add IPv%c DNS server: %s\n",
+	D(INTERFACE, "Add IPv%c DNS server: %s",
 	  s->af == AF_INET6 ? '6' : '4', str);
 	vlist_simple_add(&ip->dns_servers, &s->node);
 }
@@ -1436,7 +1448,7 @@ void
 interface_add_dns_server_list(struct interface_ip_settings *ip, struct blob_attr *list)
 {
 	struct blob_attr *cur;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, list, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_STRING)
@@ -1459,7 +1471,7 @@ interface_add_dns_search_domain(struct interface_ip_settings *ip, const char *st
 	if (!s)
 		return;
 
-	D(INTERFACE, "Add DNS search domain: %s\n", str);
+	D(INTERFACE, "Add DNS search domain: %s", str);
 	memcpy(s->name, str, len);
 	vlist_simple_add(&ip->dns_search, &s->node);
 }
@@ -1468,7 +1480,7 @@ void
 interface_add_dns_search_list(struct interface_ip_settings *ip, struct blob_attr *list)
 {
 	struct blob_attr *cur;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, list, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_STRING)
@@ -1595,7 +1607,7 @@ interface_write_resolv_conf(const char *jail)
 	unlink(tmppath);
 	f = fopen(tmppath, "w+");
 	if (!f) {
-		D(INTERFACE, "Failed to open %s for writing\n", path);
+		D(INTERFACE, "Failed to open %s for writing", path);
 		return;
 	}
 
@@ -1616,7 +1628,7 @@ interface_write_resolv_conf(const char *jail)
 	if (crcold == crcnew) {
 		unlink(tmppath);
 	} else if (rename(tmppath, path) < 0) {
-		D(INTERFACE, "Failed to replace %s\n", path);
+		D(INTERFACE, "Failed to replace %s", path);
 		unlink(tmppath);
 	}
 }

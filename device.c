@@ -26,9 +26,11 @@
 #include "system.h"
 #include "config.h"
 #include "wireless.h"
+#include "ubus.h"
 
 static struct list_head devtypes = LIST_HEAD_INIT(devtypes);
 static struct avl_tree devices;
+static struct blob_buf b;
 
 static const struct blobmsg_policy dev_attrs[__DEV_ATTR_MAX] = {
 	[DEV_ATTR_TYPE] = { .name = "type", .type = BLOBMSG_TYPE_STRING },
@@ -62,8 +64,19 @@ static const struct blobmsg_policy dev_attrs[__DEV_ATTR_MAX] = {
 	[DEV_ATTR_DROP_UNSOLICITED_NA] = { .name = "drop_unsolicited_na", .type = BLOBMSG_TYPE_BOOL },
 	[DEV_ATTR_ARP_ACCEPT] = { .name = "arp_accept", .type = BLOBMSG_TYPE_BOOL },
 	[DEV_ATTR_AUTH] = { .name = "auth", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_AUTH_VLAN] = { .name = "auth_vlan", BLOBMSG_TYPE_ARRAY },
 	[DEV_ATTR_SPEED] = { .name = "speed", .type = BLOBMSG_TYPE_INT32 },
 	[DEV_ATTR_DUPLEX] = { .name = "duplex", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_VLAN] = { .name = "vlan", .type = BLOBMSG_TYPE_ARRAY },
+	[DEV_ATTR_PAUSE] = { .name = "pause", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_ASYM_PAUSE] = { .name = "asym_pause", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_RXPAUSE] = { .name = "rxpause", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_TXPAUSE] = { .name = "txpause", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_AUTONEG] = { .name = "autoneg", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_GRO] = { .name = "gro", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_MASTER] = { .name = "conduit", .type = BLOBMSG_TYPE_STRING },
+	[DEV_ATTR_EEE] = { .name = "eee", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_ATTR_TAGS] = { .name = "tags", .type = BLOBMSG_TYPE_ARRAY },
 	[DEV_ATTR_IP_FORWARDING] = { .name = "ip_forwarding", .type = BLOBMSG_TYPE_BOOL},
 	[DEV_ATTR_IP6_FORWARDING] = { .name = "ip6_forwarding", .type = BLOBMSG_TYPE_BOOL},
 	[DEV_ATTR_ARP] = { .name = "arp", .type = BLOBMSG_TYPE_BOOL},
@@ -160,10 +173,19 @@ static int set_device_state(struct device *dev, bool state)
 		dev->orig_settings.flags &= dev->settings.flags;
 		system_if_apply_settings(dev, &dev->settings, dev->settings.flags);
 
-		system_if_up(dev);
+		if (!dev->external)
+			system_if_up(dev);
+
+		system_if_apply_settings_after_up(dev, &dev->settings);
 	} else {
-		system_if_down(dev);
+		if (!dev->external)
+			system_if_down(dev);
 		system_if_apply_settings(dev, &dev->orig_settings, dev->orig_settings.flags);
+
+		/* Restore any settings present in UCI which may have
+		 * failed to apply so that they will be re-attempted
+		 * the next time the device is brought up */
+		dev->settings.flags |= dev->settings.valid_flags;
 	}
 
 	return 0;
@@ -286,12 +308,62 @@ device_merge_settings(struct device *dev, struct device_settings *n)
 	n->auth = s->flags & DEV_OPT_AUTH ? s->auth : os->auth;
 	n->speed = s->flags & DEV_OPT_SPEED ? s->speed : os->speed;
 	n->duplex = s->flags & DEV_OPT_DUPLEX ? s->duplex : os->duplex;
+	n->pause = s->flags & DEV_OPT_PAUSE ? s->pause : os->pause;
+	n->asym_pause = s->flags & DEV_OPT_ASYM_PAUSE ? s->asym_pause : os->asym_pause;
+	n->rxpause = s->flags & DEV_OPT_RXPAUSE ? s->rxpause : os->rxpause;
+	n->txpause = s->flags & DEV_OPT_TXPAUSE ? s->txpause : os->txpause;
+	n->autoneg = s->flags & DEV_OPT_AUTONEG ? s->autoneg : os->autoneg;
+	n->gro = s->flags & DEV_OPT_GRO ? s->gro : os->gro;
+	n->eee = s->flags & DEV_OPT_EEE ? s->eee : os->eee;
+	n->master_ifindex = s->flags & DEV_OPT_MASTER ? s->master_ifindex : os->master_ifindex;
 	n->ip_forwarding = s->flags & DEV_OPT_IP_FORWARDING ? s->ip_forwarding : os->ip_forwarding;
 	n->ip6_forwarding = s->flags & DEV_OPT_IP6_FORWARDING ? s->ip6_forwarding : os->ip6_forwarding;
 	n->arp = s->flags & DEV_OPT_ARP ? s->arp : os->arp;
 	n->accept_routing_header = s->flags & DEV_OPT_IP6_ACCEPT_ROUTING_HEADER ? s->accept_routing_header : os->accept_routing_header;
 	n->hop_limit = s->flags & DEV_OPT_IP6_HOP_LIMIT ? s->hop_limit : os->hop_limit;
+
 	n->flags = s->flags | os->flags | os->valid_flags;
+}
+
+static bool device_fill_vlan_range(struct device_vlan_range *r, const char *val)
+{
+	unsigned long cur_start, cur_end;
+	char *sep;
+
+	cur_start = strtoul(val, &sep, 0);
+	cur_end = cur_start;
+
+	if (*sep == '-')
+		cur_end = strtoul(sep + 1, &sep, 0);
+	if (*sep || cur_end < cur_start)
+		return false;
+
+	r->start = cur_start;
+	r->end = cur_end;
+
+	return true;
+}
+
+static void
+device_set_extra_vlans(struct device *dev, struct blob_attr *data)
+{
+	struct blob_attr *cur;
+	int n_vlans;
+	size_t rem;
+
+	dev->n_extra_vlan = 0;
+	if (!data)
+		return;
+
+	n_vlans = blobmsg_check_array(data, BLOBMSG_TYPE_STRING);
+	if (n_vlans < 1)
+		return;
+
+	dev->extra_vlan = realloc(dev->extra_vlan, n_vlans * sizeof(*dev->extra_vlan));
+	blobmsg_for_each_attr(cur, data, rem)
+		if (device_fill_vlan_range(&dev->extra_vlan[dev->n_extra_vlan],
+					   blobmsg_get_string(cur)))
+			dev->n_extra_vlan++;
 }
 
 void
@@ -302,7 +374,10 @@ device_init_settings(struct device *dev, struct blob_attr **tb)
 	struct ether_addr *ea;
 	bool disabled = false;
 
-	s->flags = 0;
+	if (dev->wireless)
+		s->flags &= DEV_OPT_ISOLATE;
+	else
+		s->flags = 0;
 	if ((cur = tb[DEV_ATTR_ENABLED]))
 		disabled = !blobmsg_get_bool(cur);
 
@@ -348,7 +423,7 @@ device_init_settings(struct device *dev, struct blob_attr **tb)
 		if (system_resolve_rpfilter(blobmsg_data(cur), &s->rpfilter))
 			s->flags |= DEV_OPT_RPFILTER;
 		else
-			DPRINTF("Failed to resolve rpfilter: %s\n", (char *) blobmsg_data(cur));
+			D(DEVICE, "Failed to resolve rpfilter: %s", (char *) blobmsg_data(cur));
 	}
 
 	if ((cur = tb[DEV_ATTR_ACCEPTLOCAL])) {
@@ -361,7 +436,7 @@ device_init_settings(struct device *dev, struct blob_attr **tb)
 		if (s->igmpversion >= 1 && s->igmpversion <= 3)
 			s->flags |= DEV_OPT_IGMPVERSION;
 		else
-			DPRINTF("Failed to resolve igmpversion: %d\n", blobmsg_get_u32(cur));
+			D(DEVICE, "Failed to resolve igmpversion: %d", blobmsg_get_u32(cur));
 	}
 
 	if ((cur = tb[DEV_ATTR_MLDVERSION])) {
@@ -369,7 +444,7 @@ device_init_settings(struct device *dev, struct blob_attr **tb)
 		if (s->mldversion >= 1 && s->mldversion <= 2)
 			s->flags |= DEV_OPT_MLDVERSION;
 		else
-			DPRINTF("Failed to resolve mldversion: %d\n", blobmsg_get_u32(cur));
+			D(DEVICE, "Failed to resolve mldversion: %d", blobmsg_get_u32(cur));
 	}
 
 	if ((cur = tb[DEV_ATTR_NEIGHREACHABLETIME])) {
@@ -402,7 +477,7 @@ device_init_settings(struct device *dev, struct blob_attr **tb)
 		if (s->multicast_router <= 2)
 			s->flags |= DEV_OPT_MULTICAST_ROUTER;
 		else
-			DPRINTF("Invalid value: %d - (Use 0: never, 1: learn, 2: always)\n", blobmsg_get_u32(cur));
+			D(DEVICE, "Invalid value: %d - (Use 0: never, 1: learn, 2: always)", blobmsg_get_u32(cur));
 	}
 
 	if ((cur = tb[DEV_ATTR_MULTICAST_FAST_LEAVE])) {
@@ -475,6 +550,59 @@ device_init_settings(struct device *dev, struct blob_attr **tb)
 		s->flags |= DEV_OPT_DUPLEX;
 	}
 
+	if ((cur = tb[DEV_ATTR_PAUSE])) {
+		s->pause = blobmsg_get_bool(cur);
+		s->flags |= DEV_OPT_PAUSE;
+	}
+
+	if ((cur = tb[DEV_ATTR_ASYM_PAUSE])) {
+		s->asym_pause = blobmsg_get_bool(cur);
+		s->flags |= DEV_OPT_ASYM_PAUSE;
+	}
+
+	if ((cur = tb[DEV_ATTR_RXPAUSE])) {
+		s->rxpause = blobmsg_get_bool(cur);
+		s->flags |= DEV_OPT_RXPAUSE;
+	}
+
+	if ((cur = tb[DEV_ATTR_TXPAUSE])) {
+		s->txpause = blobmsg_get_bool(cur);
+		s->flags |= DEV_OPT_TXPAUSE;
+	}
+
+	if ((cur = tb[DEV_ATTR_AUTONEG])) {
+		s->autoneg = blobmsg_get_bool(cur);
+		s->flags |= DEV_OPT_AUTONEG;
+	}
+
+	if ((cur = tb[DEV_ATTR_GRO])) {
+		s->gro = blobmsg_get_bool(cur);
+		s->flags |= DEV_OPT_GRO;
+	}
+
+	if ((cur = tb[DEV_ATTR_MASTER])) {
+		char *ifname = blobmsg_get_string(cur);
+		s->master_ifindex = if_nametoindex(ifname);
+		s->flags |= DEV_OPT_MASTER;
+	}
+
+	if ((cur = tb[DEV_ATTR_EEE])) {
+		s->eee = blobmsg_get_bool(cur);
+		s->flags |= DEV_OPT_EEE;
+	}
+
+	/* Remember the settings present in UCI */
+	s->valid_flags = s->flags;
+
+	cur = tb[DEV_ATTR_AUTH_VLAN];
+	free(dev->config_auth_vlans);
+	dev->config_auth_vlans = cur ? blob_memdup(cur) : NULL;
+
+	cur = tb[DEV_ATTR_TAGS];
+	free(dev->tags);
+	dev->tags = cur ? blob_memdup(cur) : NULL;
+
+	device_set_extra_vlans(dev, tb[DEV_ATTR_VLAN]);
 	if ((cur = tb[DEV_ATTR_IP_FORWARDING])) {
 		s->ip_forwarding = blobmsg_get_bool(cur);
 		s->flags |= DEV_OPT_IP_FORWARDING;
@@ -519,6 +647,17 @@ static void __init dev_init(void)
 	avl_init(&devices, avl_strcmp, true, NULL);
 }
 
+static int device_release_cb(void *ctx, struct safe_list *list)
+{
+	struct device_user *dep = container_of(list, struct device_user, list);
+
+	if (!dep->dev || !dep->claimed)
+		return 0;
+
+	device_release(dep);
+	return 0;
+}
+
 static int device_broadcast_cb(void *ctx, struct safe_list *list)
 {
 	struct device_user *dep = container_of(list, struct device_user, list);
@@ -533,12 +672,62 @@ static int device_broadcast_cb(void *ctx, struct safe_list *list)
 	return 0;
 }
 
-void device_broadcast_event(struct device *dev, enum device_event ev)
+const char *device_event_name(enum device_event ev)
 {
+	static const char * const event_names[] = {
+		[DEV_EVENT_ADD] = "add",
+		[DEV_EVENT_REMOVE] = "remove",
+		[DEV_EVENT_UPDATE_IFNAME] = "update_ifname",
+		[DEV_EVENT_UPDATE_IFINDEX] = "update_ifindex",
+		[DEV_EVENT_SETUP] = "setup",
+		[DEV_EVENT_TEARDOWN] = "teardown",
+		[DEV_EVENT_UP] = "up",
+		[DEV_EVENT_DOWN] = "down",
+		[DEV_EVENT_AUTH_UP] = "auth_up",
+		[DEV_EVENT_LINK_UP] = "link_up",
+		[DEV_EVENT_LINK_DOWN] = "link_down",
+		[DEV_EVENT_TOPO_CHANGE] = "topo_change",
+	};
+
+	if (ev >= ARRAY_SIZE(event_names) || !event_names[ev])
+		return "unknown";
+
+	return event_names[ev];
+}
+
+void __device_broadcast_event(struct device *dev, enum device_event ev)
+{
+	const char *ev_name;
 	int dev_ev = ev;
 
 	safe_list_for_each(&dev->aliases, device_broadcast_cb, &dev_ev);
 	safe_list_for_each(&dev->users, device_broadcast_cb, &dev_ev);
+
+	switch (ev) {
+	case DEV_EVENT_ADD:
+	case DEV_EVENT_REMOVE:
+	case DEV_EVENT_UP:
+	case DEV_EVENT_DOWN:
+	case DEV_EVENT_AUTH_UP:
+	case DEV_EVENT_LINK_UP:
+	case DEV_EVENT_LINK_DOWN:
+	case DEV_EVENT_TOPO_CHANGE:
+		break;
+	default:
+		return;
+	}
+
+	ev_name = device_event_name(ev);
+	if (!dev->ifname[0])
+		return;
+
+	blob_buf_init(&b, 0);
+	blobmsg_add_string(&b, "name", dev->ifname);
+	blobmsg_add_u8(&b, "auth_status", dev->auth_status);
+	blobmsg_add_u8(&b, "present", dev->present);
+	blobmsg_add_u8(&b, "active", dev->active);
+	blobmsg_add_u8(&b, "link_active", dev->link_active);
+	netifd_ubus_device_notify(ev_name, b.head, -1);
 }
 
 static void
@@ -546,12 +735,30 @@ device_fill_default_settings(struct device *dev)
 {
 	struct device_settings *s = &dev->settings;
 	struct ether_addr *ea;
+	const char *master;
+	int ret;
 
 	if (!(s->flags & DEV_OPT_MACADDR)) {
 		ea = config_get_default_macaddr(dev->ifname);
 		if (ea) {
 			memcpy(s->macaddr, ea, 6);
 			s->flags |= DEV_OPT_DEFAULT_MACADDR;
+		}
+	}
+
+	if (!(s->flags & DEV_OPT_GRO)) {
+		ret = config_get_default_gro(dev->ifname);
+		if (ret >= 0) {
+			s->gro = ret;
+			s->flags |= DEV_OPT_GRO;
+		}
+	}
+
+	if (!(s->flags & DEV_OPT_MASTER)) {
+		master = config_get_default_conduit(dev->ifname);
+		if (master) {
+			s->master_ifindex = if_nametoindex(master);
+			s->flags |= DEV_OPT_MASTER;
 		}
 	}
 }
@@ -568,27 +775,17 @@ int device_claim(struct device_user *dep)
 		return -1;
 
 	dep->claimed = true;
-	D(DEVICE, "Claim %s %s, new active count: %d\n", dev->type->name, dev->ifname, dev->active + 1);
+	D(DEVICE, "Claim %s %s, new active count: %d", dev->type->name, dev->ifname, dev->active + 1);
 	if (++dev->active != 1)
 		return 0;
 
 	device_broadcast_event(dev, DEV_EVENT_SETUP);
 	device_fill_default_settings(dev);
-	if (dev->external) {
-		/* Get ifindex for external claimed devices so a valid   */
-		/* ifindex is in place avoiding possible race conditions */
-		device_set_ifindex(dev, system_if_resolve(dev));
-		if (!dev->ifindex)
-			ret = -1;
-
-		system_if_get_settings(dev, &dev->orig_settings);
-	} else
-		ret = dev->set_state(dev, true);
-
+	ret = dev->set_state(dev, true);
 	if (ret == 0)
 		device_broadcast_event(dev, DEV_EVENT_UP);
 	else {
-		D(DEVICE, "claim %s %s failed: %d\n", dev->type->name, dev->ifname, ret);
+		D(DEVICE, "claim %s %s failed: %d", dev->type->name, dev->ifname, ret);
 		dev->active = 0;
 		dep->claimed = false;
 	}
@@ -605,15 +802,14 @@ void device_release(struct device_user *dep)
 
 	dep->claimed = false;
 	dev->active--;
-	D(DEVICE, "Release %s %s, new active count: %d\n", dev->type->name, dev->ifname, dev->active);
+	D(DEVICE, "Release %s %s, new active count: %d", dev->type->name, dev->ifname, dev->active);
 	assert(dev->active >= 0);
 
 	if (dev->active)
 		return;
 
 	device_broadcast_event(dev, DEV_EVENT_TEARDOWN);
-	if (!dev->external)
-		dev->set_state(dev, false);
+	dev->set_state(dev, false);
 
 	if (dev->active)
 		return;
@@ -634,7 +830,7 @@ int device_init_virtual(struct device *dev, struct device_type *type, const char
 	assert(dev);
 	assert(type);
 
-	D(DEVICE, "Initialize device '%s'\n", name ? name : "");
+	D(DEVICE, "Initialize device '%s'", name ? name : "");
 	INIT_SAFE_LIST(&dev->users);
 	INIT_SAFE_LIST(&dev->aliases);
 	dev->type = type;
@@ -643,8 +839,10 @@ int device_init_virtual(struct device *dev, struct device_type *type, const char
 		int ret;
 
 		ret = device_set_ifname(dev, name);
-		if (ret < 0)
+		if (ret < 0) {
+			netifd_log_message(L_WARNING, "Failed to initalize device '%s'\n", name);
 			return ret;
+		}
 	}
 
 	if (!dev->set_state)
@@ -680,7 +878,7 @@ device_create_default(const char *name, bool external)
 	if (!external && system_if_force_external(name))
 		return NULL;
 
-	D(DEVICE, "Create simple device '%s'\n", name);
+	D(DEVICE, "Create simple device '%s'", name);
 	dev = calloc(1, sizeof(*dev));
 	if (!dev)
 		return NULL;
@@ -695,9 +893,6 @@ device_create_default(const char *name, bool external)
 	}
 
 	dev->default_config = true;
-	if (external)
-		system_if_apply_settings(dev, &dev->settings, dev->settings.flags);
-
 	device_check_state(dev);
 
 	return dev;
@@ -726,7 +921,6 @@ __device_get(const char *name, int create, bool check_vlan)
 
 	if (dev) {
 		if (create > 1 && !dev->external) {
-			system_if_apply_settings(dev, &dev->settings, dev->settings.flags);
 			dev->external = true;
 			device_set_present(dev, true);
 		}
@@ -745,7 +939,7 @@ device_delete(struct device *dev)
 	if (!dev->avl.key)
 		return;
 
-	D(DEVICE, "Delete device '%s' from list\n", dev->ifname);
+	D(DEVICE, "Delete device '%s' from list", dev->ifname);
 	avl_delete(&devices, &dev->avl);
 	dev->avl.key = NULL;
 }
@@ -762,15 +956,15 @@ static int device_cleanup_cb(void *ctx, struct safe_list *list)
 
 void device_cleanup(struct device *dev)
 {
-	D(DEVICE, "Clean up device '%s'\n", dev->ifname);
+	D(DEVICE, "Clean up device '%s'", dev->ifname);
 	safe_list_for_each(&dev->users, device_cleanup_cb, NULL);
 	safe_list_for_each(&dev->aliases, device_cleanup_cb, NULL);
 	device_delete(dev);
 }
 
-static void __device_set_present(struct device *dev, bool state)
+static void __device_set_present(struct device *dev, bool state, bool force)
 {
-	if (dev->present == state)
+	if (dev->present == state && !force)
 		return;
 
 	dev->present = state;
@@ -785,12 +979,22 @@ device_refresh_present(struct device *dev)
 	if (dev->disabled || dev->deferred)
 		state = false;
 
-	__device_set_present(dev, state);
+	D(DEVICE, "refresh device %s present: sys=%d disabled=%d deferred=%d",
+	  dev->ifname, dev->sys_present, dev->disabled, dev->deferred);
+	__device_set_present(dev, state, false);
 }
 
 void
-device_set_auth_status(struct device *dev, bool value)
+device_set_auth_status(struct device *dev, bool value, struct blob_attr *vlans)
 {
+	if (!value)
+		vlans = NULL;
+	else if (!blob_attr_equal(vlans, dev->auth_vlans))
+		device_set_auth_status(dev, false, NULL);
+
+	free(dev->auth_vlans);
+	dev->auth_vlans = vlans ? blob_memdup(vlans) : NULL;
+
 	if (dev->auth_status == value)
 		return;
 
@@ -810,14 +1014,19 @@ device_set_auth_status(struct device *dev, bool value)
 	device_broadcast_event(dev, DEV_EVENT_LINK_UP);
 }
 
-void device_set_present(struct device *dev, bool state)
+void _device_set_present(struct device *dev, bool state)
 {
 	if (dev->sys_present == state)
 		return;
 
-	D(DEVICE, "%s '%s' %s present\n", dev->type->name, dev->ifname, state ? "is now" : "is no longer" );
+	D(DEVICE, "%s '%s' %s present", dev->type->name, dev->ifname, state ? "is now" : "is no longer" );
 	dev->sys_present = state;
-	device_refresh_present(dev);
+	if (!state)
+		__device_set_present(dev, state, true);
+	else
+		device_refresh_present(dev);
+	if (!state)
+		safe_list_for_each(&dev->users, device_release_cb, NULL);
 }
 
 void device_set_link(struct device *dev, bool state)
@@ -849,8 +1058,11 @@ int device_set_ifname(struct device *dev, const char *name)
 	if (!strcmp(dev->ifname, name))
 		return 0;
 
-	if (strlen(name) > sizeof(dev->ifname) - 1)
+	if (strlen(name) > sizeof(dev->ifname) - 1) {
+		netifd_log_message(L_WARNING, "Cannot set device name: '%s' is longer than max size %zd\n",
+			name, sizeof(dev->ifname) - 1);
 		return -1;
+	}
 
 	if (dev->avl.key)
 		avl_delete(&devices, &dev->avl);
@@ -893,7 +1105,7 @@ __device_add_user(struct device_user *dep, struct device *dev)
 		head = &dev->users;
 
 	safe_list_add(&dep->list, head);
-	D(DEVICE, "Add user for device '%s', refcount=%d\n", dev->ifname, device_refcount(dev));
+	D(DEVICE, "Add user for device '%s', refcount=%d", dev->ifname, device_refcount(dev));
 
 	if (dep->cb && dev->present) {
 		dep->cb(dep, DEV_EVENT_ADD);
@@ -923,8 +1135,12 @@ static void
 device_free(struct device *dev)
 {
 	__devlock++;
+	free(dev->auth_vlans);
 	free(dev->config);
 	device_cleanup(dev);
+	free(dev->tags);
+	free(dev->config_auth_vlans);
+	free(dev->extra_vlan);
 	dev->type->free(dev);
 	__devlock--;
 }
@@ -966,7 +1182,7 @@ void device_remove_user(struct device_user *dep)
 
 	safe_list_del(&dep->list);
 	dep->dev = NULL;
-	D(DEVICE, "Remove user for device '%s', refcount=%d\n", dev->ifname, device_refcount(dev));
+	D(DEVICE, "Remove user for device '%s', refcount=%d", dev->ifname, device_refcount(dev));
 	device_free_unused();
 }
 
@@ -1033,15 +1249,10 @@ device_apply_config(struct device *dev, struct device_type *type,
 	enum dev_change_type change;
 
 	change = device_set_config(dev, type, config);
-	if (dev->external) {
-		system_if_apply_settings(dev, &dev->settings, dev->settings.flags);
-		change = DEV_CONFIG_APPLIED;
-	}
-
 	switch (change) {
 		case DEV_CONFIG_RESTART:
 		case DEV_CONFIG_APPLIED:
-			D(DEVICE, "Device '%s': config applied\n", dev->ifname);
+			D(DEVICE, "Device '%s': config applied", dev->ifname);
 			config = blob_memdup(config);
 			free(dev->config);
 			dev->config = config;
@@ -1049,7 +1260,7 @@ device_apply_config(struct device *dev, struct device_type *type,
 				int ret = 0;
 
 				device_set_present(dev, false);
-				if (dev->active && !dev->external) {
+				if (dev->active) {
 					ret = dev->set_state(dev, false);
 					if (!ret)
 						ret = dev->set_state(dev, true);
@@ -1059,7 +1270,7 @@ device_apply_config(struct device *dev, struct device_type *type,
 			}
 			break;
 		case DEV_CONFIG_NO_CHANGE:
-			D(DEVICE, "Device '%s': no configuration change\n", dev->ifname);
+			D(DEVICE, "Device '%s': no configuration change", dev->ifname);
 			break;
 		case DEV_CONFIG_RECREATE:
 			break;
@@ -1071,14 +1282,18 @@ device_apply_config(struct device *dev, struct device_type *type,
 static void
 device_replace(struct device *dev, struct device *odev)
 {
-	struct device_user *dep, *tmp;
+	struct device_user *dep;
 
 	__devlock++;
 	if (odev->present)
 		device_set_present(odev, false);
 
-	list_for_each_entry_safe(dep, tmp, &odev->users.list, list.list) {
+	while (!list_empty(&odev->users.list)) {
+		dep = list_first_entry(&odev->users.list, struct device_user, list.list);
 		device_release(dep);
+		if (!dep->dev)
+			continue;
+
 		safe_list_del(&dep->list);
 		__device_add_user(dep, dev);
 	}
@@ -1129,14 +1344,14 @@ device_create(const char *name, struct device_type *type,
 		change = device_apply_config(odev, type, config);
 		switch (change) {
 		case DEV_CONFIG_RECREATE:
-			D(DEVICE, "Device '%s': recreate device\n", odev->ifname);
+			D(DEVICE, "Device '%s': recreate device", odev->ifname);
 			device_delete(odev);
 			break;
 		default:
 			return odev;
 		}
 	} else
-		D(DEVICE, "Create new device '%s' (%s)\n", name, type->name);
+		D(DEVICE, "Create new device '%s' (%s)", name, type->name);
 
 	config = blob_memdup(config);
 	if (!config)
@@ -1190,6 +1405,9 @@ device_dump_status(struct blob_buf *b, struct device *dev)
 	blobmsg_add_u8(b, "carrier", !!dev->link_active);
 	blobmsg_add_u8(b, "auth_status", !!dev->auth_status);
 
+	if (dev->tags)
+		blobmsg_add_blob(b, dev->tags);
+
 	if (dev->type->dump_info)
 		dev->type->dump_info(dev, b);
 	else
@@ -1197,6 +1415,13 @@ device_dump_status(struct blob_buf *b, struct device *dev)
 
 	if (dev->active) {
 		device_merge_settings(dev, &st);
+		if (st.flags & DEV_OPT_MASTER) {
+			char buf[64], *devname;
+
+			devname = if_indextoname(st.master_ifindex, buf);
+			if (devname)
+				blobmsg_add_string(b, "conduit", devname);
+		}
 		if (st.flags & DEV_OPT_MTU)
 			blobmsg_add_u32(b, "mtu", st.mtu);
 		if (st.flags & DEV_OPT_MTU6)
@@ -1257,6 +1482,10 @@ device_dump_status(struct blob_buf *b, struct device *dev)
 			blobmsg_add_u8(b, "arp_accept", st.arp_accept);
 		if (st.flags & DEV_OPT_AUTH)
 			blobmsg_add_u8(b, "auth", st.auth);
+		if (st.flags & DEV_OPT_GRO)
+			blobmsg_add_u8(b, "gro", st.gro);
+		if (st.flags & DEV_OPT_EEE)
+			blobmsg_add_u8(b, "eee", st.eee);
 		if (st.flags & DEV_OPT_IP_FORWARDING)
 			blobmsg_add_u8(b, "ip_forwarding", st.ip_forwarding);
 		if (st.flags & DEV_OPT_IP6_FORWARDING)

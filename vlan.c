@@ -51,7 +51,9 @@ __vlan_hotplug_op(struct device *dev, struct device *member, struct blob_attr *v
 
 	blob_buf_init(&b, 0);
 	a = blobmsg_open_array(&b, "vlans");
-	blobmsg_printf(&b, NULL, "%d", vldev->id);
+	blobmsg_printf(&b, NULL, "%d:u", vldev->id);
+	if (vlan && blobmsg_len(vlan))
+		blob_put_raw(&b, blobmsg_data(vlan), blobmsg_len(vlan));
 	blobmsg_close_array(&b, a);
 
 	if (add)
@@ -128,7 +130,7 @@ static int vlan_set_device_state(struct device *dev, bool up)
 
 static void vlan_dev_cb(struct device_user *dep, enum device_event ev)
 {
-	char name[IFNAMSIZ + 1];
+	char name[IFNAMSIZ];
 	struct vlan_device *vldev;
 
 	vldev = container_of(dep, struct vlan_device, dep);
@@ -143,7 +145,7 @@ static void vlan_dev_cb(struct device_user *dep, enum device_event ev)
 		vlan_hotplug_check(vldev, dep->dev);
 		vldev->dev.hidden = dep->dev->hidden;
 		if (snprintf(name, sizeof(name), "%s.%d", dep->dev->ifname,
-			     vldev->id) >= sizeof(name) - 1 ||
+			     vldev->id) >= (int)sizeof(name) - 1 ||
 		    device_set_ifname(&vldev->dev, name))
 			free_vlan_if(&vldev->dev);
 		break;
@@ -175,7 +177,7 @@ static struct device *get_vlan_device(struct device *dev, char *id_str, bool cre
 	};
 	struct vlan_device *vldev;
 	struct device_user *dep;
-	char name[IFNAMSIZ + 1];
+	char name[IFNAMSIZ];
 	char *err = NULL;
 	int id, *alias_id;
 
@@ -203,10 +205,10 @@ static struct device *get_vlan_device(struct device *dev, char *id_str, bool cre
 	if (!create)
 		return NULL;
 
-	if (snprintf(name, sizeof(name), "%s.%d", dev->ifname, id) >= sizeof(name) - 1)
+	if (snprintf(name, sizeof(name), "%s.%d", dev->ifname, id) >= (int)sizeof(name) - 1)
 		return NULL;
 
-	D(DEVICE, "Create vlan device '%s'\n", name);
+	D(DEVICE, "Create vlan device '%s'", name);
 
 	vldev = calloc(1, sizeof(*vldev));
 	if (!vldev)

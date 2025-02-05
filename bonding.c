@@ -244,7 +244,7 @@ bonding_enable_port(struct bonding_port *bp)
 
 	ret = system_bonding_set_port(&bdev->dev, bp->dev.dev, true, bp->set_primary);
 	if (ret < 0) {
-		D(DEVICE, "Bonding port %s could not be added\n", bp->dev.dev->ifname);
+		D(DEVICE, "Bonding port %s could not be added", bp->dev.dev->ifname);
 		goto error;
 	}
 
@@ -303,7 +303,7 @@ bonding_port_cb(struct device_user *dep, enum device_event ev)
 		bonding_disable_port(bp, true);
 		break;
 	case DEV_EVENT_REMOVE:
-		if (dep->hotplug) {
+		if (dep->hotplug && !dev->sys_present) {
 			vlist_delete(&bdev->ports, &bp->node);
 			return;
 		}
@@ -353,7 +353,7 @@ bonding_config_init(struct device *dev)
 {
 	struct bonding_device *bdev;
 	struct blob_attr *cur;
-	int rem;
+	size_t rem;
 
 	bdev = container_of(dev, struct bonding_device, dev);
 
@@ -396,7 +396,7 @@ bonding_apply_settings(struct bonding_device *bdev, struct blob_attr **tb)
 
 	if ((cur = tb[BOND_ATTR_POLICY]) != NULL) {
 		const char *policy = blobmsg_get_string(cur);
-		int i;
+		size_t i;
 
 		for (i = 0; i < ARRAY_SIZE(bonding_policy_str); i++) {
 			if (strcmp(policy, bonding_policy_str[i]) != 0)
@@ -442,10 +442,10 @@ bonding_reload(struct device *dev, struct blob_attr *attr)
 	struct blob_attr *tb_dev[__DEV_ATTR_MAX];
 	struct blob_attr *tb_b[__BOND_ATTR_MAX];
 	enum dev_change_type ret = DEV_CONFIG_APPLIED;
-	unsigned long diff;
+	unsigned long diff[2] = {};
 	struct bonding_device *bdev;
 
-	BUILD_BUG_ON(sizeof(diff) < __BOND_ATTR_MAX / 8);
+	BUILD_BUG_ON(sizeof(diff[0]) < __BOND_ATTR_MAX / 8);
 	BUILD_BUG_ON(sizeof(diff) < __DEV_ATTR_MAX / 8);
 
 	bdev = container_of(dev, struct bonding_device, dev);
@@ -472,17 +472,16 @@ bonding_reload(struct device *dev, struct blob_attr *attr)
 		blobmsg_parse(device_attr_list.params, __DEV_ATTR_MAX, otb_dev,
 			blob_data(bdev->config_data), blob_len(bdev->config_data));
 
-		diff = 0;
-		uci_blob_diff(tb_dev, otb_dev, &device_attr_list, &diff);
-		if (diff)
+		uci_blob_diff(tb_dev, otb_dev, &device_attr_list, diff);
+		if (diff[0] | diff[1])
 		    ret = DEV_CONFIG_RESTART;
 
 		blobmsg_parse(bonding_attrs, __BOND_ATTR_MAX, otb_b,
 			blob_data(bdev->config_data), blob_len(bdev->config_data));
 
-		diff = 0;
-		uci_blob_diff(tb_b, otb_b, &bonding_attr_list, &diff);
-		if (diff & ~(1 << BOND_ATTR_PORTS))
+		diff[0] = 0;
+		uci_blob_diff(tb_b, otb_b, &bonding_attr_list, diff);
+		if (diff[0] & ~(1 << BOND_ATTR_PORTS))
 		    ret = DEV_CONFIG_RESTART;
 
 		bonding_config_init(dev);

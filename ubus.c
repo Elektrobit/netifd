@@ -27,6 +27,7 @@
 struct ubus_context *ubus_ctx = NULL;
 static struct blob_buf b;
 static const char *ubus_path;
+static struct udebug_ubus udebug;
 
 /* global object */
 
@@ -272,7 +273,7 @@ netifd_handle_alias(struct ubus_context *ctx, struct ubus_object *obj,
 	struct device *dev = NULL;
 	struct blob_attr *tb[__ALIAS_ATTR_MAX];
 	struct blob_attr *cur;
-	int rem;
+	size_t rem;
 
 	blobmsg_parse(alias_attrs, __ALIAS_ATTR_MAX, tb, blob_data(msg), blob_len(msg));
 
@@ -305,6 +306,7 @@ enum {
 	DEV_STATE_NAME,
 	DEV_STATE_DEFER,
 	DEV_STATE_AUTH_STATUS,
+	DEV_STATE_AUTH_VLANS,
 	__DEV_STATE_MAX,
 };
 
@@ -312,6 +314,7 @@ static const struct blobmsg_policy dev_state_policy[__DEV_STATE_MAX] = {
 	[DEV_STATE_NAME] = { .name = "name", .type = BLOBMSG_TYPE_STRING },
 	[DEV_STATE_DEFER] = { .name = "defer", .type = BLOBMSG_TYPE_BOOL },
 	[DEV_STATE_AUTH_STATUS] = { .name = "auth_status", .type = BLOBMSG_TYPE_BOOL },
+	[DEV_STATE_AUTH_VLANS] = { .name = "auth_vlans", BLOBMSG_TYPE_ARRAY },
 };
 
 static int
@@ -322,6 +325,7 @@ netifd_handle_set_state(struct ubus_context *ctx, struct ubus_object *obj,
 	struct device *dev = NULL;
 	struct blob_attr *tb[__DEV_STATE_MAX];
 	struct blob_attr *cur;
+	bool auth_status;
 
 	blobmsg_parse(dev_state_policy, __DEV_STATE_MAX, tb, blob_data(msg), blob_len(msg));
 
@@ -337,9 +341,12 @@ netifd_handle_set_state(struct ubus_context *ctx, struct ubus_object *obj,
 	if (cur)
 		device_set_deferred(dev, !!blobmsg_get_u8(cur));
 
-	cur = tb[DEV_STATE_AUTH_STATUS];
-	if (cur)
-		device_set_auth_status(dev, !!blobmsg_get_u8(cur));
+	if ((cur = tb[DEV_STATE_AUTH_STATUS]) != NULL)
+		auth_status = blobmsg_get_bool(cur);
+	else
+		auth_status = dev->auth_status;
+	if (tb[DEV_STATE_AUTH_STATUS] || tb[DEV_STATE_AUTH_VLANS])
+		device_set_auth_status(dev, auth_status, tb[DEV_STATE_AUTH_VLANS]);
 
 	return 0;
 }
@@ -428,12 +435,12 @@ netifd_ubus_reconnect_timer(struct uloop_timeout *timeout)
 	int t = 2;
 
 	if (ubus_reconnect(ubus_ctx, ubus_path) != 0) {
-		DPRINTF("failed to reconnect, trying again in %d seconds\n", t);
+		D(SYSTEM, "failed to reconnect, trying again in %d seconds", t);
 		uloop_timeout_set(&retry, t * 1000);
 		return;
 	}
 
-	DPRINTF("reconnected to ubus, new id: %08x\n", ubus_ctx->local_id);
+	D(SYSTEM, "reconnected to ubus, new id: %08x", ubus_ctx->local_id);
 	netifd_ubus_add_fd();
 }
 
@@ -836,6 +843,8 @@ netifd_dump_status(struct interface *iface)
 
 	if (iface->jail_device)
 		blobmsg_add_string(&b, "jail_device", iface->jail_device);
+	if (iface->tags)
+		blobmsg_add_blob(&b, iface->tags);
 
 	if (iface->state == IFS_UP) {
 		if (iface->updated) {
@@ -1137,7 +1146,7 @@ netifd_handle_iface(struct ubus_context *ctx, struct ubus_object *obj,
 {
 	struct interface *iface;
 	struct blob_attr *tb;
-	int i;
+	size_t i;
 
 	blobmsg_parse(&iface_policy, 1, &tb, blob_data(msg), blob_len(msg));
 	if (!tb)
@@ -1163,7 +1172,7 @@ netifd_handle_iface(struct ubus_context *ctx, struct ubus_object *obj,
 static void netifd_add_iface_object(void)
 {
 	struct ubus_method *methods;
-	int i;
+	size_t i;
 
 	methods = calloc(1, sizeof(iface_object_methods));
 	if (!methods)
@@ -1367,14 +1376,13 @@ netifd_extdev_invoke(uint32_t id, const char *method, struct blob_attr *msg,
 int
 netifd_ubus_init(const char *path)
 {
-	uloop_init();
 	ubus_path = path;
 
 	ubus_ctx = ubus_connect(path);
 	if (!ubus_ctx)
 		return -EIO;
 
-	DPRINTF("connected as %08x\n", ubus_ctx->local_id);
+	D(SYSTEM, "connected as %08x", ubus_ctx->local_id);
 	ubus_ctx->connection_lost = netifd_ubus_connection_lost;
 	netifd_ubus_add_fd();
 
@@ -1383,12 +1391,15 @@ netifd_ubus_init(const char *path)
 	netifd_add_object(&wireless_object);
 	netifd_add_iface_object();
 
+	udebug_ubus_init(&udebug, ubus_ctx, "netifd", netifd_udebug_config);
+
 	return 0;
 }
 
 void
 netifd_ubus_done(void)
 {
+	udebug_ubus_free(&udebug);
 	ubus_free(ubus_ctx);
 }
 
@@ -1413,6 +1424,16 @@ netifd_ubus_interface_notify(struct interface *iface, bool up)
 }
 
 void
+netifd_ubus_wireless_notify(struct wireless_device *wdev, bool up)
+{
+	const char *event = (up) ? "wireless.update" : "wireless.down";
+
+	blob_buf_init(&b, 0);
+	wireless_device_status(wdev, &b);
+	ubus_notify(ubus_ctx, &wireless_object, event, b.head, -1);
+}
+
+void
 netifd_ubus_add_interface(struct interface *iface)
 {
 	struct ubus_object *obj = &iface->ubus;
@@ -1426,7 +1447,7 @@ netifd_ubus_add_interface(struct interface *iface)
 	obj->methods = iface_object_methods;
 	obj->n_methods = ARRAY_SIZE(iface_object_methods);
 	if (ubus_add_object(ubus_ctx, &iface->ubus)) {
-		DPRINTF("failed to publish ubus object for interface '%s'\n", iface->name);
+		D(SYSTEM, "failed to publish ubus object for interface '%s'", iface->name);
 		free(name);
 		obj->name = NULL;
 	}
@@ -1440,4 +1461,46 @@ netifd_ubus_remove_interface(struct interface *iface)
 
 	ubus_remove_object(ubus_ctx, &iface->ubus);
 	free((void *) iface->ubus.name);
+}
+
+static void
+netifd_ubus_data_cb(struct ubus_request *req, int type, struct blob_attr *msg)
+{
+	struct blob_attr *srv, *in, *t, *data;
+	procd_data_cb cb = req->priv;
+	size_t rem, rem2, rem3, rem4;
+
+	blobmsg_for_each_attr(srv, msg, rem) {
+		if (!blobmsg_check_attr(srv, true) ||
+		    blobmsg_type(srv) != BLOBMSG_TYPE_TABLE)
+			continue;
+		blobmsg_for_each_attr(in, srv, rem2) {
+			if (!blobmsg_check_attr(in , true) ||
+				blobmsg_type(in) != BLOBMSG_TYPE_TABLE)
+				continue;
+			blobmsg_for_each_attr(t, in, rem3) {
+				if (!blobmsg_check_attr(t, true) ||
+					blobmsg_type(t) != BLOBMSG_TYPE_TABLE)
+					continue;
+				blobmsg_for_each_attr(data, t, rem4) {
+					if (!blobmsg_check_attr(t, true) ||
+						blobmsg_type(t) != BLOBMSG_TYPE_TABLE)
+						continue;
+					cb(data);
+				}
+			}
+		}
+	}
+}
+
+void netifd_ubus_get_procd_data(const char *type, procd_data_cb cb)
+{
+	uint32_t id;
+
+	if (ubus_lookup_id(ubus_ctx, "service", &id))
+		return;
+
+	blob_buf_init(&b, 0);
+	blobmsg_add_string(&b, "type", type);
+	ubus_invoke(ubus_ctx, id, "get_data", b.head, netifd_ubus_data_cb, cb, 30000);
 }

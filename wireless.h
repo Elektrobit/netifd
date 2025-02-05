@@ -40,11 +40,10 @@ struct wireless_device {
 	bool handler_action;
 	bool handler_pending;
 	bool serialize;
+	bool config_update;
 
 	struct wireless_driver *drv;
 	struct vlist_tree interfaces;
-	struct vlist_tree vlans;
-	struct vlist_tree stations;
 	char *name;
 
 	struct netifd_process script_task;
@@ -72,8 +71,6 @@ struct wireless_device {
 	int retry;
 
 	int vif_idx;
-	int vlan_idx;
-	int sta_idx;
 };
 
 struct wireless_interface {
@@ -81,6 +78,8 @@ struct wireless_interface {
 	const char *section;
 	char *name;
 
+	struct vlist_tree vlans;
+	struct vlist_tree stations;
 	struct wireless_device *wdev;
 
 	struct blob_attr *config;
@@ -88,9 +87,17 @@ struct wireless_interface {
 
 	const char *ifname;
 	struct blob_attr *network;
+	struct blob_attr *network_vlan;
 	bool proxyarp;
 	bool isolate;
+	bool bridge_isolate;
 	bool ap_mode;
+	int multicast_to_unicast;
+	int vlan_idx;
+	int sta_idx;
+	bool disabled;
+
+	int network_ifindex;
 };
 
 struct wireless_vlan {
@@ -98,24 +105,23 @@ struct wireless_vlan {
 	const char *section;
 	char *name;
 
-	struct wireless_device *wdev;
-	char *vif;
-
 	struct blob_attr *config;
 	struct blob_attr *data;
 
 	const char *ifname;
 	struct blob_attr *network;
+	struct blob_attr *network_vlan;
+	int multicast_to_unicast;
 	bool isolate;
+	bool bridge_isolate;
+
+	int network_ifindex;
 };
 
 struct wireless_station {
 	struct vlist_node node;
 	const char *section;
 	char *name;
-
-	struct wireless_device *wdev;
-	char *vif;
 
 	struct blob_attr *config;
 	struct blob_attr *data;
@@ -138,12 +144,13 @@ void wireless_device_reconf(struct wireless_device *wdev);
 void wireless_device_status(struct wireless_device *wdev, struct blob_buf *b);
 void wireless_device_get_validate(struct wireless_device *wdev, struct blob_buf *b);
 struct wireless_interface* wireless_interface_create(struct wireless_device *wdev, struct blob_attr *data, const char *section);
-void wireless_vlan_create(struct wireless_device *wdev, char *vif, struct blob_attr *data, const char *section);
-void wireless_station_create(struct wireless_device *wdev, char *vif, struct blob_attr *data, const char *section);
+void wireless_vlan_create(struct wireless_interface *vif, struct blob_attr *data, const char *section);
+void wireless_station_create(struct wireless_interface *vif, struct blob_attr *data, const char *section);
 int wireless_device_notify(struct wireless_device *wdev, struct blob_attr *data,
 			   struct ubus_request_data *req);
 
-void wireless_start_pending(void);
+void wireless_check_network_enabled(void);
+void wireless_start_pending(int timeout);
 void wireless_init(void);
 void wireless_device_hotplug_event(const char *name, bool add);
 

@@ -60,8 +60,19 @@ enum {
 	DEV_ATTR_DROP_UNSOLICITED_NA,
 	DEV_ATTR_ARP_ACCEPT,
 	DEV_ATTR_AUTH,
+	DEV_ATTR_AUTH_VLAN,
 	DEV_ATTR_SPEED,
 	DEV_ATTR_DUPLEX,
+	DEV_ATTR_VLAN,
+	DEV_ATTR_PAUSE,
+	DEV_ATTR_ASYM_PAUSE,
+	DEV_ATTR_RXPAUSE,
+	DEV_ATTR_TXPAUSE,
+	DEV_ATTR_AUTONEG,
+	DEV_ATTR_GRO,
+	DEV_ATTR_MASTER,
+	DEV_ATTR_EEE,
+	DEV_ATTR_TAGS,
 	DEV_ATTR_IP_FORWARDING,
 	DEV_ATTR_IP6_FORWARDING,
 	DEV_ATTR_ARP,
@@ -131,11 +142,19 @@ enum {
 	DEV_OPT_ARP_ACCEPT		= (1ULL << 29),
 	DEV_OPT_SPEED			= (1ULL << 30),
 	DEV_OPT_DUPLEX			= (1ULL << 31),
-	DEV_OPT_IP_FORWARDING   = (1ULL << 32),
-	DEV_OPT_IP6_FORWARDING  = (1ULL << 33),
-	DEV_OPT_ARP             = (1ULL << 34),
-	DEV_OPT_IP6_ACCEPT_ROUTING_HEADER = (1ULL << 35),
-	DEV_OPT_IP6_HOP_LIMIT   = (1ULL << 36),
+	DEV_OPT_PAUSE			= (1ULL << 32),
+	DEV_OPT_ASYM_PAUSE		= (1ULL << 33),
+	DEV_OPT_RXPAUSE			= (1ULL << 34),
+	DEV_OPT_TXPAUSE			= (1ULL << 35),
+	DEV_OPT_AUTONEG			= (1ULL << 36),
+	DEV_OPT_GRO			= (1ULL << 37),
+	DEV_OPT_MASTER			= (1ULL << 38),
+	DEV_OPT_EEE			= (1ULL << 39),
+	DEV_OPT_IP_FORWARDING   = (1ULL << 40),
+	DEV_OPT_IP6_FORWARDING  = (1ULL << 41),
+	DEV_OPT_ARP             = (1ULL << 42),
+	DEV_OPT_IP6_ACCEPT_ROUTING_HEADER = (1ULL << 43),
+	DEV_OPT_IP6_HOP_LIMIT   = (1ULL << 44),
 };
 
 /* events broadcasted to all users of a device */
@@ -213,11 +232,18 @@ struct device_settings {
 	bool auth;
 	unsigned int speed;
 	bool duplex;
-	bool ip_forwarding;
-	bool ip6_forwarding;
-	bool arp;
-	int accept_routing_header;
-	int hop_limit;
+	bool pause;
+	bool asym_pause;
+	bool rxpause;
+	bool txpause;
+	bool autoneg;
+	bool gro;
+	int master_ifindex;
+	bool eee;
+};
+
+struct device_vlan_range {
+	uint16_t start, end;
 };
 
 /*
@@ -233,8 +259,11 @@ struct device {
 
 	struct vlist_tree vlans;
 	struct kvlist vlan_aliases;
+	struct blob_attr *config_auth_vlans;
+	struct blob_attr *auth_vlans;
+	struct blob_attr *tags;
 
-	char ifname[IFNAMSIZ + 1];
+	char ifname[IFNAMSIZ];
 	int ifindex;
 
 	struct blob_attr *config;
@@ -263,6 +292,8 @@ struct device {
 	bool bpdu_filter;
 
 	struct interface *config_iface;
+	struct device_vlan_range *extra_vlan;
+	int n_extra_vlan;
 
 	/* set interface up or down */
 	device_state_cb set_state;
@@ -346,9 +377,26 @@ static inline struct device *device_get(const char *name, int create)
 
 void device_add_user(struct device_user *dep, struct device *dev);
 void device_remove_user(struct device_user *dep);
-void device_broadcast_event(struct device *dev, enum device_event ev);
+const char *device_event_name(enum device_event ev);
+void __device_broadcast_event(struct device *dev, enum device_event ev);
+#define device_broadcast_event(dev, ev) do {					\
+	struct device *__ev_dev = (dev);					\
+	D(DEVICE, "%s: event (%s)",						\
+	  (__ev_dev && __ev_dev->ifname[0] ? __ev_dev->ifname : "(none)"),	\
+	  device_event_name(ev));						\
+	__device_broadcast_event(__ev_dev, ev);					\
+} while (0)
 
-void device_set_present(struct device *dev, bool state);
+void _device_set_present(struct device *dev, bool state);
+#define device_set_present(dev, state) do {					\
+	struct device *__ev_dev = (dev);					\
+	bool __ev_state = state;						\
+	D(DEVICE, "%s: set present=%d",						\
+	  (__ev_dev && __ev_dev->ifname[0] ? __ev_dev->ifname : "(none)"),	\
+	  __ev_state);								\
+	_device_set_present(__ev_dev, __ev_state);				\
+} while (0)
+
 void device_set_link(struct device *dev, bool state);
 void device_set_ifindex(struct device *dev, int ifindex);
 int device_set_ifname(struct device *dev, const char *name);
@@ -364,7 +412,7 @@ struct device *get_vlan_device_chain(const char *ifname, int create);
 void alias_notify_device(const char *name, struct device *dev);
 struct device *device_alias_get(const char *name);
 
-void device_set_auth_status(struct device *dev, bool value);
+void device_set_auth_status(struct device *dev, bool value, struct blob_attr *vlans);
 
 static inline void
 device_set_deferred(struct device *dev, bool value)

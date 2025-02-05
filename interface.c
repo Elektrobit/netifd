@@ -25,6 +25,7 @@
 #include "ubus.h"
 #include "config.h"
 #include "system.h"
+#include "wireless.h"
 
 struct vlist_tree interfaces;
 static LIST_HEAD(iface_all_users);
@@ -44,6 +45,7 @@ enum {
 	IFACE_ATTR_DNS,
 	IFACE_ATTR_DNS_SEARCH,
 	IFACE_ATTR_DNS_METRIC,
+	IFACE_ATTR_RENEW,
 	IFACE_ATTR_METRIC,
 	IFACE_ATTR_INTERFACE,
 	IFACE_ATTR_IP6ASSIGN,
@@ -55,6 +57,7 @@ enum {
 	IFACE_ATTR_IP6IFACEID,
 	IFACE_ATTR_FORCE_LINK,
 	IFACE_ATTR_IP6WEIGHT,
+	IFACE_ATTR_TAGS,
 	IFACE_ATTR_MAX
 };
 
@@ -72,6 +75,7 @@ static const struct blobmsg_policy iface_attrs[IFACE_ATTR_MAX] = {
 	[IFACE_ATTR_PEERDNS] = { .name = "peerdns", .type = BLOBMSG_TYPE_BOOL },
 	[IFACE_ATTR_METRIC] = { .name = "metric", .type = BLOBMSG_TYPE_INT32 },
 	[IFACE_ATTR_DNS] = { .name = "dns", .type = BLOBMSG_TYPE_ARRAY },
+	[IFACE_ATTR_RENEW] = { .name = "renew", .type = BLOBMSG_TYPE_BOOL },
 	[IFACE_ATTR_DNS_SEARCH] = { .name = "dns_search", .type = BLOBMSG_TYPE_ARRAY },
 	[IFACE_ATTR_DNS_METRIC] = { .name = "dns_metric", .type = BLOBMSG_TYPE_INT32 },
 	[IFACE_ATTR_INTERFACE] = { .name = "interface", .type = BLOBMSG_TYPE_STRING },
@@ -84,6 +88,7 @@ static const struct blobmsg_policy iface_attrs[IFACE_ATTR_MAX] = {
 	[IFACE_ATTR_IP6IFACEID] = { .name = "ip6ifaceid", .type = BLOBMSG_TYPE_STRING },
 	[IFACE_ATTR_FORCE_LINK] = { .name = "force_link", .type = BLOBMSG_TYPE_BOOL },
 	[IFACE_ATTR_IP6WEIGHT] = { .name = "ip6weight", .type = BLOBMSG_TYPE_INT32 },
+	[IFACE_ATTR_TAGS] = { .name = "tags", .type = BLOBMSG_TYPE_ARRAY },
 };
 
 const struct uci_blob_param_list interface_attr_list = {
@@ -232,7 +237,8 @@ interface_add_data(struct interface *iface, const struct blob_attr *data)
 int interface_parse_data(struct interface *iface, const struct blob_attr *attr)
 {
 	struct blob_attr *cur;
-	int rem, ret;
+	size_t rem;
+	int ret;
 
 	iface->updated = 0;
 
@@ -437,7 +443,7 @@ interface_main_dev_cb(struct device_user *dep, enum device_event ev)
 		break;
 	case DEV_EVENT_REMOVE:
 		interface_set_available(iface, false);
-		if (dep->dev && dep->dev->external)
+		if (dep->dev && dep->dev->external && !dep->dev->sys_present)
 			interface_set_main_dev(iface, NULL);
 		break;
 	case DEV_EVENT_UP:
@@ -452,7 +458,8 @@ interface_main_dev_cb(struct device_user *dep, enum device_event ev)
 		interface_set_link_state(iface, device_link_active(dep->dev));
 		break;
 	case DEV_EVENT_TOPO_CHANGE:
-		interface_proto_event(iface->proto, PROTO_CMD_RENEW, false);
+		if (iface->renew)
+			interface_proto_event(iface->proto, PROTO_CMD_RENEW, false);
 		return;
 	default:
 		break;
@@ -484,7 +491,7 @@ interface_set_available(struct interface *iface, bool new_state)
 	if (iface->available == new_state)
 		return;
 
-	D(INTERFACE, "Interface '%s', available=%d\n", iface->name, new_state);
+	D(INTERFACE, "Interface '%s', available=%d", iface->name, new_state);
 	iface->available = new_state;
 
 	if (new_state) {
@@ -519,7 +526,7 @@ static void
 interface_add_assignment_classes(struct interface *iface, struct blob_attr *list)
 {
 	struct blob_attr *cur;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, list, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_STRING)
@@ -652,7 +659,8 @@ interface_claim_device(struct interface *iface)
 	} else if (iface->device &&
 		!(iface->proto_handler->flags & PROTO_FLAG_NODEV)) {
 		dev = device_get(iface->device, true);
-		interface_set_device_config(iface, dev);
+		if (!(iface->proto_handler->flags & PROTO_FLAG_NODEV_CONFIG))
+			interface_set_device_config(iface, dev);
 	} else {
 		dev = iface->ext_dev.dev;
 	}
@@ -704,13 +712,10 @@ interface_do_free(struct interface *iface)
 	free(iface->config);
 	netifd_ubus_remove_interface(iface);
 	avl_delete(&interfaces.avl, &iface->node.avl);
-	if (iface->jail)
-		free(iface->jail);
-	if (iface->jail_device)
-		free(iface->jail_device);
-	if (iface->host_device)
-		free(iface->host_device);
-
+	free(iface->zone);
+	free(iface->jail);
+	free(iface->jail_device);
+	free(iface->host_device);
 	free(iface);
 }
 
@@ -773,12 +778,13 @@ interface_proto_event_cb(struct interface_proto_state *state, enum interface_pro
 
 		netifd_log_message(L_NOTICE, "Interface '%s' is now down\n", iface->name);
 		mark_interface_down(iface);
-		if (iface->main_dev.dev)
+		interface_write_resolv_conf(iface->jail);
+		if (iface->main_dev.dev && !(iface->config_state == IFC_NORMAL && iface->autostart && iface->available))
 			device_release(&iface->main_dev);
 		if (iface->l3_dev.dev)
 			device_remove_user(&iface->l3_dev);
 		interface_handle_config_change(iface);
-		break;
+		return;
 	case IFPEV_LINK_LOST:
 		if (iface->state != IFS_UP)
 			return;
@@ -848,6 +854,7 @@ interface_alloc(const char *name, struct blob_attr *config, bool dynamic)
 		force_link = true;
 
 	iface->autostart = blobmsg_get_bool_default(tb[IFACE_ATTR_AUTO], true);
+	iface->renew = blobmsg_get_bool_default(tb[IFACE_ATTR_RENEW], true);
 	iface->force_link = blobmsg_get_bool_default(tb[IFACE_ATTR_FORCE_LINK], force_link);
 	iface->dynamic = dynamic;
 	iface->proto_ip.no_defaultroute =
@@ -910,12 +917,12 @@ interface_alloc(const char *name, struct blob_attr *config, bool dynamic)
 
 	if ((cur = tb[IFACE_ATTR_IP4TABLE])) {
 		if (!system_resolve_rt_table(blobmsg_data(cur), &iface->ip4table))
-			DPRINTF("Failed to resolve routing table: %s\n", (char *) blobmsg_data(cur));
+			D(INTERFACE, "Failed to resolve routing table: %s", (char *) blobmsg_data(cur));
 	}
 
 	if ((cur = tb[IFACE_ATTR_IP6TABLE])) {
 		if (!system_resolve_rt_table(blobmsg_data(cur), &iface->ip6table))
-			DPRINTF("Failed to resolve routing table: %s\n", (char *) blobmsg_data(cur));
+			D(INTERFACE, "Failed to resolve routing table: %s", (char *) blobmsg_data(cur));
 	}
 
 	iface->proto_ip.no_delegation = !blobmsg_get_bool_default(tb[IFACE_ATTR_DELEGATE], true);
@@ -972,6 +979,7 @@ static bool __interface_add(struct interface *iface, struct blob_attr *config, b
 	}
 
 	iface->config = config;
+	iface->tags = tb[IFACE_ATTR_TAGS];
 	vlist_add(&interfaces, &iface->node, iface->name);
 
 	if (name) {
@@ -1077,11 +1085,17 @@ interface_add_link(struct interface *iface, struct device *dev,
 {
 	struct device *mdev = iface->main_dev.dev;
 
-	if (mdev == dev)
+	if (mdev == dev) {
+		if (iface->state != IFS_UP) {
+			interface_set_available(iface, false);
+			if (dev->present)
+				interface_set_available(iface, true);
+		}
 		return 0;
+	}
 
 	if (iface->main_dev.hotplug)
-		device_remove_user(&iface->main_dev);
+		interface_set_main_dev(iface, NULL);
 
 	if (mdev) {
 		if (mdev->hotplug_ops)
@@ -1125,6 +1139,7 @@ interface_set_up(struct interface *iface)
 	const char *error = NULL;
 
 	iface->autostart = true;
+	wireless_check_network_enabled();
 
 	if (iface->state != IFS_DOWN)
 		return;
@@ -1157,6 +1172,7 @@ interface_set_down(struct interface *iface)
 			__interface_set_down(iface, false);
 	} else {
 		iface->autostart = false;
+		wireless_check_network_enabled();
 		__interface_set_down(iface, false);
 	}
 }
@@ -1245,7 +1261,7 @@ interface_device_config_changed(struct interface *if_old, struct interface *if_n
 	struct blob_attr *ntb[__DEV_ATTR_MAX];
 	struct blob_attr *otb[__DEV_ATTR_MAX];
 	struct device *dev = if_old->main_dev.dev;
-	unsigned long diff = 0;
+	unsigned long diff[2] = {};
 
 	BUILD_BUG_ON(sizeof(diff) < __DEV_ATTR_MAX / 8);
 
@@ -1264,8 +1280,9 @@ interface_device_config_changed(struct interface *if_old, struct interface *if_n
 	blobmsg_parse(device_attr_list.params, __DEV_ATTR_MAX, ntb,
 		blob_data(if_new->config), blob_len(if_new->config));
 
-	uci_blob_diff(ntb, otb, &device_attr_list, &diff);
-	return diff;
+	uci_blob_diff(ntb, otb, &device_attr_list, diff);
+
+	return diff[0] | diff[1];
 }
 
 static void
@@ -1293,7 +1310,7 @@ interface_change_config(struct interface *if_old, struct interface *if_new)
 		reload = true;
 
 	if (!if_old->proto_handler->config_params)
-		D(INTERFACE, "No config parameters for interface '%s'\n",
+		D(INTERFACE, "No config parameters for interface '%s'",
 		  if_old->name);
 	else if (!uci_blob_check_equal(if_old->config, if_new->config,
 				       if_old->proto_handler->config_params))
@@ -1306,6 +1323,7 @@ interface_change_config(struct interface *if_old, struct interface *if_new)
 	})
 
 	if_old->config = if_new->config;
+	if_old->tags = if_new->tags;
 	if (if_old->config_autostart != if_new->config_autostart) {
 		if (if_old->config_autostart)
 			reload = true;
@@ -1313,23 +1331,24 @@ interface_change_config(struct interface *if_old, struct interface *if_new)
 		if_old->autostart = if_new->config_autostart;
 	}
 
+	if (FIELD_CHANGED_STR(zone)) {
+		free(if_old->zone);
+		if_old->zone = if_new->zone;
+		reload = true;
+	}
+
 	if_old->device_config = if_new->device_config;
 	if_old->config_autostart = if_new->config_autostart;
-	if (if_old->jail)
-		free(if_old->jail);
 
+	free(if_old->jail);
 	if_old->jail = if_new->jail;
 	if (if_old->jail)
 		if_old->autostart = false;
 
-	if (if_old->jail_device)
-		free(if_old->jail_device);
-
+	free(if_old->jail_device);
 	if_old->jail_device = if_new->jail_device;
 
-	if (if_old->host_device)
-		free(if_old->host_device);
-
+	free(if_old->host_device);
 	if_old->host_device = if_new->host_device;
 
 	if_old->device = if_new->device;
@@ -1356,7 +1375,7 @@ interface_change_config(struct interface *if_old, struct interface *if_new)
 #undef UPDATE
 
 	if (reload) {
-		D(INTERFACE, "Reload interface '%s' because of config changes\n",
+		D(INTERFACE, "Reload interface '%s' because of config changes",
 		  if_old->name);
 		interface_clear_errors(if_old);
 		set_config_state(if_old, IFC_RELOAD);
@@ -1395,13 +1414,13 @@ interface_update(struct vlist_tree *tree, struct vlist_node *node_new,
 	struct interface *if_new = container_of(node_new, struct interface, node);
 
 	if (node_old && node_new) {
-		D(INTERFACE, "Update interface '%s'\n", if_new->name);
+		D(INTERFACE, "Update interface '%s'", if_new->name);
 		interface_change_config(if_old, if_new);
 	} else if (node_old) {
-		D(INTERFACE, "Remove interface '%s'\n", if_old->name);
+		D(INTERFACE, "Remove interface '%s'", if_old->name);
 		set_config_state(if_old, IFC_REMOVE);
 	} else if (node_new) {
-		D(INTERFACE, "Create interface '%s'\n", if_new->name);
+		D(INTERFACE, "Create interface '%s'", if_new->name);
 		interface_event(if_new, IFEV_CREATE);
 		proto_init_interface(if_new, if_new->config);
 		interface_claim_device(if_new);

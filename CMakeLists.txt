@@ -1,15 +1,18 @@
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 3.5)
 
 PROJECT(netifd C)
 
-IF(NOT ${CMAKE_VERSION} LESS 3.0)
-  include(CheckCCompilerFlag)
-  check_c_compiler_flag(-Wimplicit-fallthrough HAS_IMPLICIT_FALLTHROUGH)
-ENDIF()
+include(CheckCCompilerFlag)
+check_c_compiler_flag(-Wimplicit-fallthrough HAS_IMPLICIT_FALLTHROUGH)
 
 OPTION(ENABLE_PROTO_SHELL "enable shell protocol handlers" ON)
 
-ADD_DEFINITIONS(-Os -Wall -Werror --std=gnu99 -Wmissing-declarations -Wno-unknown-warning-option -Wno-format-truncation)
+ADD_DEFINITIONS(-Wall -Werror)
+IF(CMAKE_C_COMPILER_VERSION VERSION_GREATER 6)
+	add_definitions(-Wextra -Werror=implicit-function-declaration)
+	add_definitions(-Wformat -Werror=format-security -Werror=format-nonliteral)
+ENDIF()
+ADD_DEFINITIONS(-Os --std=gnu99 -Wmissing-declarations -Wno-unused-parameter -Wno-unused-but-set-parameter)
 
 IF(HAS_IMPLICIT_FALLTHROUGH)
   ADD_DEFINITIONS(-Wimplicit-fallthrough)
@@ -34,11 +37,13 @@ FIND_LIBRARY(uci NAMES uci)
 FIND_LIBRARY(ubox NAMES ubox)
 FIND_LIBRARY(ubus NAMES ubus)
 FIND_LIBRARY(json NAMES json-c json)
+FIND_LIBRARY(udebug NAMES udebug)
 FIND_LIBRARY(blobmsg_json NAMES blobmsg_json)
 
-SET(LIBS ${ubox} ${ubus} ${uci} ${json} ${blobmsg_json})
+SET(LIBS ${ubox} ${ubus} ${uci} ${json} ${blobmsg_json} ${udebug})
 
 FIND_PATH(ubox_include_dir libubox/usock.h)
+FIND_PATH(udebug_include_dir udebug.h)
 INCLUDE_DIRECTORIES(${ubox_include_dir})
 
 IF (NOT DEFINED LIBNL_LIBS)
@@ -49,6 +54,13 @@ IF (NOT DEFINED LIBNL_LIBS)
 		SET(LIBNL_LIBS ${LIBNL_LIBRARIES})
 	ENDIF()
 ENDIF()
+
+ADD_CUSTOM_COMMAND(
+	OUTPUT ethtool-modes.h
+	COMMAND ./make_ethtool_modes_h.sh ${CMAKE_C_COMPILER} > ./ethtool-modes.h
+	DEPENDS ./make_ethtool_modes_h.sh
+)
+ADD_CUSTOM_TARGET(ethtool-modes-h DEPENDS ethtool-modes.h)
 
 IF("${CMAKE_SYSTEM_NAME}" MATCHES "Linux" AND NOT DUMMY_MODE)
 	SET(SOURCES ${SOURCES} system-linux.c)
@@ -92,3 +104,4 @@ TARGET_LINK_LIBRARIES(zcip-script ${ubus} ${ubox})
 INSTALL(TARGETS zcip-script
 	RUNTIME DESTINATION libexec/netifd
 )
+ADD_DEPENDENCIES(netifd ethtool-modes-h)

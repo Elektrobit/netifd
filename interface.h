@@ -108,7 +108,7 @@ struct interface {
 
 	const char *name;
 	const char *device;
-	const char *zone;
+	char *zone;
 	char *jail;
 	char *jail_device;
 	char *host_device;
@@ -124,6 +124,7 @@ struct interface {
 	bool dynamic;
 	bool policy_rules_set;
 	bool link_up_event;
+	bool renew;
 
 	time_t start_time;
 	enum interface_state state;
@@ -144,6 +145,7 @@ struct interface {
 	struct device_user l3_dev;
 
 	struct blob_attr *config;
+	struct blob_attr *tags;
 
 	/* primary protocol state */
 	const struct proto_handler *proto_handler;

@@ -162,7 +162,7 @@ parse_static_address_option(struct interface *iface, struct blob_attr *attr,
 	struct device_addr *addr;
 	const char *str;
 	int n_addr = 0;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_STRING)
@@ -273,7 +273,7 @@ parse_address_list(struct interface *iface, struct blob_attr *attr, bool v6,
 	struct device_addr *addr;
 	struct blob_attr *cur;
 	int n_addr = 0;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem) {
 		addr = parse_address_item(cur, v6, ext);
@@ -399,7 +399,7 @@ parse_prefix_list(struct interface *iface, struct blob_attr *attr)
 {
 	struct blob_attr *cur;
 	int n_addr = 0;
-	int rem;
+	size_t rem;
 
 	blobmsg_for_each_attr(cur, attr, rem) {
 		if (blobmsg_type(cur) != BLOBMSG_TYPE_STRING)
@@ -423,7 +423,7 @@ proto_apply_static_ip_settings(struct interface *iface, struct blob_attr *attr)
 	unsigned int netmask = 32;
 	bool ip6deprecated;
 	int n_v4 = 0, n_v6 = 0;
-	struct in_addr bcast = {}, ptp = {};
+	struct in_addr bcast = {0,}, ptp = {0,};
 
 	blobmsg_parse(proto_ip_attributes, __OPT_MAX, tb, blob_data(attr), blob_len(attr));
 

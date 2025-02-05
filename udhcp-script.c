@@ -22,7 +22,7 @@ main(int argc, char **argv)
     char key[128];
     for (;*cur; cur++) {
         char *end = strchr(*cur, '=');
-        if (!end || end - *cur >= sizeof(key))
+        if (!end || end - *cur >= (long int)sizeof(key))
             continue; // Ignore environment entries with very long or invalid keys
         memcpy(key, *cur, end - *cur);
         key[end - *cur] = 0;

@@ -240,6 +240,11 @@ struct device_settings {
 	bool gro;
 	int master_ifindex;
 	bool eee;
+	bool ip_forwarding;
+	bool ip6_forwarding;
+	bool arp;
+	int accept_routing_header;
+	int hop_limit;
 };
 
 struct device_vlan_range {

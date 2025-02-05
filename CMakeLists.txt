@@ -57,8 +57,8 @@ ENDIF()
 
 ADD_CUSTOM_COMMAND(
 	OUTPUT ethtool-modes.h
-	COMMAND ./make_ethtool_modes_h.sh ${CMAKE_C_COMPILER} > ./ethtool-modes.h
-	DEPENDS ./make_ethtool_modes_h.sh
+	COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/make_ethtool_modes_h.sh ${CMAKE_C_COMPILER} > ${CMAKE_CURRENT_BINARY_DIR}/ethtool-modes.h
+	DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/make_ethtool_modes_h.sh
 )
 ADD_CUSTOM_TARGET(ethtool-modes-h DEPENDS ethtool-modes.h)
 
@@ -79,6 +79,7 @@ ENDIF()
 
 
 ADD_EXECUTABLE(netifd ${SOURCES})
+target_include_directories(netifd PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 TARGET_COMPILE_DEFINITIONS(netifd PRIVATE $<$<BOOL:${ENABLE_PROTO_SHELL}>:ENABLE_PROTO_SHELL>)
 
 TARGET_LINK_LIBRARIES(netifd ${LIBS})

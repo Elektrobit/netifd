@@ -543,7 +543,7 @@ config_init_globals(void)
 	if (default_ttl) {
 		config.ttl = strtoul(default_ttl, NULL, 10);
 		if (config.ttl < 1 || config.ttl > 255) {
-			netifd_log_message(L_WARNING, "Invalid value '%d' for ip4_default_ttl (allowed 1-255)\n");
+			netifd_log_message(L_WARNING, "Invalid value '%d' for ip4_default_ttl (allowed 1-255)\n", config.ttl);
 		} else {
 			config.flags |= GLOBAL_OPT_TTL;
 		}

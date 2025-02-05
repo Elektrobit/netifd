@@ -7,6 +7,7 @@ IS_CONTAINER := $(shell [ -f /etc/netifd-test-container ] && echo 1 || echo 0)
 
 COMMON_CMAKE_FLAGS := -G Ninja \
 						-DCMAKE_INSTALL_PREFIX=$(PREFIX) \
+						-DCMAKE_PREFIX_PATH=$(PREFIX) \
 						-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=on 
 
 LIB_CMAKE_FLAGS := $(COMMON_CMAKE_FLAGS) \
@@ -14,23 +15,32 @@ LIB_CMAKE_FLAGS := $(COMMON_CMAKE_FLAGS) \
 					-DUNIT_TESTING=off \
 					-DBUILD_LUA=off
 
-LIBUBOX_SOURCE := git@github.com:Elektrobit/libubox
-LIBUBOX_BRANCH := lnx5
-LIBUBOX_CMAKGE_FLAGS := $(LIB_CMAKE_FLAGS) -DBUILD_EXAMPLES=off
+LIBUBOX_SOURCE := https://git.openwrt.org/project/libubox.git
+LIBUBOX_BRANCH := master
+LIBUBOX_CMAKE_FLAGS := $(LIB_CMAKE_FLAGS) -DBUILD_EXAMPLES=off
 
-UBUS_SOURCE := git@github.com:Elektrobit/ubus
-UBUS_BRANCH := lnx5
-UBUS_CMAKGE_FLAGS := $(LIB_CMAKE_FLAGS) -DBUILD_EXAMPLES=off
+UBUS_SOURCE := https://git.openwrt.org/project/ubus.git
+UBUS_BRANCH := master
+UBUS_CMAKE_FLAGS := $(LIB_CMAKE_FLAGS) -DBUILD_EXAMPLES=off
 UBUS_DEPENDENCIES := libubox
 
 UCI_SOURCE := git@github.com:Elektrobit/uci
 UCI_BRANCH := lnx5
-UCI_CMAKGE_FLAGS := $(LIB_CMAKE_FLAGS)
+UCI_CMAKE_FLAGS := $(LIB_CMAKE_FLAGS)
 UCI_DEPENDENCIES := libubox
+
+UDEBUG_SOURCE := https://git.openwrt.org/project/udebug.git
+UDEBUG_BRANCH := master
+UDEBUG_CMAKE_FLAGS := $(LIB_CMAKE_FLAGS)
+UDEBUG_DEPENDENCIES := libubox ubus ucode
+
+UCODE_SOURCE := https://github.com/jow-/ucode.git
+UCODE_BRANCH := master
+UCODE_CMAKE_FLAGS := $(LIB_CMAKE_FLAGS)
 
 BUSYBOX_SOURCE := https://busybox.net/downloads/busybox-1.36.0.tar.bz2
 
-GIT_SOURCES := libubox ubus uci
+GIT_SOURCES := libubox ubus uci udebug ucode
 
 uc = $(shell echo '$(1)' | tr '[:lower:]' '[:upper:]')
 build_git_source = $(call _build_git_source,$(1),$(call uc,$(1)))
@@ -59,7 +69,7 @@ ifeq ($(IS_CONTAINER), 1)
 .PHONY: build-$(1)
 build-$(1): $(SOURCEDIR)/$(1) $(addprefix build-,$(value $(2)_DEPENDENCIES)) | $(WORKDIR)/build-$(1)
 	@echo Building $(1)
-	cmake $(value $(2)_CMAKGE_FLAGS) \
+	cmake $(value $(2)_CMAKE_FLAGS) \
 		-B $(WORKDIR)/build-$(1) -S $(SOURCEDIR)/$(1)
 	cmake --build $(WORKDIR)/build-$(1)
 	cmake --install $(WORKDIR)/build-$(1)
@@ -106,7 +116,7 @@ build: build-zcip
 # NOTE: we have do define LIBNL_LIBS and the include path to libnl
 #       due to a bug in netifd's CMakeLists, that prevents incremental builds
 .PHONY: build-netifd
-build-netifd: build-libubox build-ubus build-uci | $(WORKDIR)/build-netifd
+build-netifd: build-libubox build-ubus build-uci build-udebug | $(WORKDIR)/build-netifd
 	@echo Building netifd
 	cmake $(COMMON_CMAKE_FLAGS) \
 		-DENABLE_PROTO_SHELL=OFF \

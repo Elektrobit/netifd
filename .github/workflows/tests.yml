@@ -2,8 +2,10 @@ name: tests
 
 on:
   pull_request:
-    branches: [ lnx5 ]
+    branches: [ BaseOS ]
     workflow_call: {}
+  push:
+    branches: [ BaseOS ]
 
 jobs:
   run-tests:

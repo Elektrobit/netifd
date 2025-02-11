@@ -27,7 +27,7 @@
 struct ubus_context *ubus_ctx = NULL;
 static struct blob_buf b;
 static const char *ubus_path;
-static struct udebug_ubus udebug;
+//static struct udebug_ubus udebug;
 
 /* global object */
 
@@ -1391,7 +1391,7 @@ netifd_ubus_init(const char *path)
 	netifd_add_object(&wireless_object);
 	netifd_add_iface_object();
 
-	udebug_ubus_init(&udebug, ubus_ctx, "netifd", netifd_udebug_config);
+//	udebug_ubus_init(&udebug, ubus_ctx, "netifd", netifd_udebug_config);
 
 	return 0;
 }
@@ -1399,7 +1399,7 @@ netifd_ubus_init(const char *path)
 void
 netifd_ubus_done(void)
 {
-	udebug_ubus_free(&udebug);
+	//udebug_ubus_free(&udebug);
 	ubus_free(ubus_ctx);
 }
 

@@ -54,7 +54,9 @@ static void
 dhcp_process_callback(struct netifd_process *proc, int ret)
 {
 	struct dhcp_proto_state *state = container_of(proc, struct dhcp_proto_state, client);
-	if (!state->teardown) { /* unexpected shutdown, restart */
+	if (state->teardown) {
+		state->proto.proto_event(&state->proto, IFPEV_DOWN);
+	} else { /* unexpected shutdown, restart */
 		int code = -1;
 		char *desc = "unknown";
 		if (WIFEXITED(ret)) {
@@ -130,6 +132,8 @@ udhcp_handler(struct interface_proto_state *proto,
 		if (state->client.uloop.pending) {
 			state->teardown = true;
 			kill(state->client.uloop.pid, SIGTERM);
+		} else {
+			state->proto.proto_event(&state->proto, IFPEV_DOWN);
 		}
 		break;
 	case PROTO_CMD_RENEW:
@@ -171,11 +175,7 @@ udhcp4_configure(struct dhcp_proto_state *state, const char *action, struct blob
 	if (strcmp(action, "deconfig") == 0) {
 		interface_update_start(iface, false);
 		interface_update_complete(iface);
-		if (state->teardown) {
-			state->proto.proto_event(&state->proto, IFPEV_DOWN);
-		} else {
-			state->proto.proto_event(&state->proto, IFPEV_LINK_LOST);
-		}
+		state->proto.proto_event(&state->proto, IFPEV_LINK_LOST);
 	} else if (strcmp(action, "bound") == 0 || strcmp(action, "renew") == 0) {
 		interface_update_start(iface, false);
 

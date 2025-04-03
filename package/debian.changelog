@@ -1,3 +1,9 @@
+netifd (20250403) unstable; urgency=medium
+
+  * Fix issue with dhcp client not properly starting when used on a bridge
+
+ -- Elektrobit <info@elektrobit.de>  Thu, 03 Apr 2025 08:00:00 +0000
+
 netifd (20250206) unstable; urgency=medium
 
   * Update Upstream. Take a look at (github.com/Elketrobit/netifd/pull/6) 

@@ -1,3 +1,9 @@
+netifd (20250428) unstable; urgency=medium
+ 
+   * Amend ipproto netlink nla_put_u32 to nla_put_u8
+ 
+  -- Elektrobit <info@elektrobit.de>  Mon, 28 Apr 2025 13:00:00 +0000
+
 netifd (20250403) unstable; urgency=medium
 
   * Fix issue with dhcp client not properly starting when used on a bridge

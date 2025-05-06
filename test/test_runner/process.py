@@ -20,7 +20,7 @@ def start_process(cmd: List[str], netns: NetNS = None, log: str = None) -> subpr
     if not netns:
         process = subprocess.Popen(**args)
     else:
-        process = NSPopen(netns.netns, **args)
+        process = NSPopen(netns.status["netns"], **args)
     if fd != -1:
         os.close(fd)
     return process
@@ -48,7 +48,7 @@ def run_process(cmd: List[str], netns: NetNS = None, stdout: str = None, stderr:
         args["stderr"] = stderr
 
     proc = NSPopen(
-        netns.netns,
+        netns.status["netns"],
         **args
     )
     out = proc.communicate()

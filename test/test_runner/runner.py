@@ -62,7 +62,7 @@ class TestSuiteRun():
             kind='veth',
             peer={
                 "ifname": peername,
-                "net_ns_fd": self._netns_test.netns
+                "net_ns_fd": self._netns_test.status["netns"]
             }
         )
         idx = self._ipr.link_lookup(ifname=name)[0]
@@ -120,7 +120,7 @@ class TestSuiteRun():
                 "ip",
                 "netns",
                 "exec",
-                self._netns_test.netns,
+                self._netns_test.status["netns"],
                 NETIFD_PATH,
                 "-c", os.path.dirname(self._suite.network_config),
                 "-r", self._get_temp_file("resolv.conf"),

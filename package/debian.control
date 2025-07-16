@@ -2,8 +2,11 @@ Source: netifd
 Maintainer: Elektrobit <info@elektrobit.de>
 Build-Depends: cmake, debhelper (>= 9), libubus-dev, libubox-dev, libjson-c-dev, libuci-dev, libnl-3-dev, pkg-config
 Standards-Version: 4.5.0
+Priority: optional
+Section: net
 
 Package: netifd
 Architecture: any
+Section: net
 Depends: ${shlibs:Depends}, ${misc:Depends}, ubus
 Description: Network Interface Daemon

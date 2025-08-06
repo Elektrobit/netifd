@@ -1,3 +1,25 @@
+netifd (20250806) unstable; urgency=medium
+
+  Sync upstream
+  * ucode: fix passing network vlan on handle_link
+  * system-linux: add variable initialization to avoid compiler warnings on older gcc
+  * ucode: add missing return code checks for fchdir/chdir
+  * wireless: add MLO support to example scripts
+  * wireless: replace with ucode scripts
+  * update example mac80211 script and wireless config
+  * scripts: fix dummy mode on systems where libubox is in /usr/local
+  * CMakeLists.txt: bump minimum required version
+  * system-dummy: add missing vrf functions
+  * netifd: iprule add sport and dport
+  * iprule: resolve ipproto by name
+  * Restore disable_ipv6 sysctl after removing a device from bridge or bond
+  * system-linux: fix sysfs name for all_ports_active flag
+  * device: fix bonding primary port selection
+  * device: add support for configuring vrf
+  * iprule: amend ipproto netlink nla_put_u32 to nla_put_u8
+
+ -- Elektrobit <info@elektrobit.de>  Tue, 06 Aug 2025 08:00:00 +0000
+
 netifd (20250403) unstable; urgency=medium
 
   * Fix issue with dhcp client not properly starting when used on a bridge

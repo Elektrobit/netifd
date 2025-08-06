@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.13)
 
 PROJECT(netifd C)
 
@@ -20,14 +20,20 @@ ENDIF()
 
 SET(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "")
 
+# ucode.c includes util.h that has implicit-function-declaration warning
+set_source_files_properties(ucode.c
+	PROPERTIES
+		COMPILE_OPTIONS "-Wno-error=implicit-function-declaration"
+)
+
 SET(SOURCES
 	main.c utils.c system.c tunnel.c handler.c
 	interface.c interface-ip.c interface-event.c
 	iprule.c proto.c proto-static.c
 	config.c device.c bridge.c veth.c vlan.c alias.c
-	macvlan.c ubus.c vlandev.c wireless.c
+	macvlan.c ubus.c vlandev.c
 	extdev.c bonding.c proto-isc-dhcp.c proto-udhcp.c
-	proto-zcip.c)
+	proto-zcip.c vrf.c ucode.c)
 
 IF(ENABLE_PROTO_SHELL)
 	LIST(APPEND SOURCES proto-shell.c)
@@ -36,13 +42,15 @@ ENDIF()
 FIND_LIBRARY(uci NAMES uci)
 FIND_LIBRARY(ubox NAMES ubox)
 FIND_LIBRARY(ubus NAMES ubus)
+FIND_LIBRARY(ucode NAMES ucode)
 FIND_LIBRARY(json NAMES json-c json)
 FIND_LIBRARY(blobmsg_json NAMES blobmsg_json)
 
-SET(LIBS ${ubox} ${ubus} ${uci} ${json} ${blobmsg_json} )
+SET(LIBS ${ubox} ${ubus} ${uci} ${json} ${blobmsg_json} ${ucode})
 
 FIND_PATH(ubox_include_dir libubox/usock.h)
-INCLUDE_DIRECTORIES(${ubox_include_dir})
+FIND_PATH(ucode_include_dir ucode/vm.h)
+INCLUDE_DIRECTORIES(${ubox_include_dir} ${ucode_include_dir})
 
 IF (NOT DEFINED LIBNL_LIBS)
 	include(FindPkgConfig)

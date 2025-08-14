@@ -25,7 +25,7 @@
 #include "netifd.h"
 #include "system.h"
 #include "config.h"
-#include "wireless.h"
+#include "ucode.h"
 #include "ubus.h"
 
 static struct list_head devtypes = LIST_HEAD_INIT(devtypes);
@@ -1523,7 +1523,7 @@ void device_hotplug_event(const char *name, bool add)
 {
 	struct device *dev;
 
-	wireless_device_hotplug_event(name, add);
+	netifd_ucode_hotplug_event(name, add);
 
 	dev = device_find(name);
 	if (!dev || dev->type != &simple_device_type)

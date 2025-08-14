@@ -1,6 +1,10 @@
 NETIFD_MAIN_DIR="${NETIFD_MAIN_DIR:-/lib/netifd}"
 
-. /usr/share/libubox/jshn.sh
+if [ -f /usr/share/libubox/jshn.sh ]; then
+	. /usr/share/libubox/jshn.sh
+else
+	. /usr/local/share/libubox/jshn.sh
+fi
 . $NETIFD_MAIN_DIR/utils.sh
 
 CMD_UP=0
@@ -183,12 +187,6 @@ _wireless_add_process() {
 	_wdev_notify
 }
 
-_wireless_process_kill_all() {
-	_wdev_notify_init $CMD_PROCESS_KILL_ALL
-	[ -n "$1" ] && json_add_int signal "$1"
-	_wdev_notify
-}
-
 _wireless_set_retry() {
 	_wdev_notify_init $CMD_SET_RETRY
 	json_add_int retry "$1"
@@ -201,7 +199,6 @@ _wdev_wrapper \
 	wireless_set_up \
 	wireless_set_data \
 	wireless_add_process \
-	wireless_process_kill_all \
 	wireless_set_retry \
 
 wireless_vif_parse_encryption() {

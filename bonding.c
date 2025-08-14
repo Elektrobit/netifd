@@ -35,6 +35,7 @@ struct bonding_device {
 	struct blob_attr *config_data;
 	bool has_macaddr;
 	bool force_active;
+	bool reset_primary;
 	bool active;
 };
 
@@ -169,6 +170,11 @@ bonding_disable_port(struct bonding_port *bp, bool keep_dev)
 	system_bonding_set_port(&bdev->dev, bp->dev.dev, false, bp->set_primary);
 	if (!keep_dev)
 		device_release(&bp->dev);
+
+	if (bp->dev.dev->settings.flags & DEV_OPT_IPV6) {
+		bp->dev.dev->settings.ipv6 = 1;
+		bp->dev.dev->settings.flags &= ~DEV_OPT_IPV6;
+	}
 
 	return 0;
 }
@@ -322,6 +328,7 @@ bonding_create_port(struct bonding_device *bdev, const char *name,
 		    struct device *dev, bool hotplug)
 {
 	struct bonding_port *bp;
+	struct bonding_config *cfg = &bdev->config;
 
 	bp = calloc(1, sizeof(*bp) + strlen(name) + 1);
 	if (!bp)
@@ -332,6 +339,11 @@ bonding_create_port(struct bonding_device *bdev, const char *name,
 	bp->dev.hotplug = hotplug;
 	strcpy(bp->name, name);
 	bp->dev.dev = dev;
+
+	if (cfg->primary != NULL) {
+		bp->set_primary = strcmp(cfg->primary, name) == 0;
+	}
+
 	vlist_add(&bdev->ports, &bp->node, bp->name);
 	/*
 	 * Need to look up the bonding port again as the above
@@ -370,6 +382,11 @@ bonding_config_init(struct device *dev)
 		bonding_create_port(bdev, name, dev, false);
 	}
 	vlist_flush(&bdev->ports);
+
+	if (bdev->reset_primary) {
+		bonding_reset_primary(bdev);
+		bdev->reset_primary = false;
+	}
 
 	if (bdev->n_failed)
 		uloop_timeout_set(&bdev->retry, 100);
@@ -588,11 +605,20 @@ bonding_port_update(struct vlist_tree *tree, struct vlist_node *node_new,
 {
 	struct bonding_port *bp;
 	struct device *dev;
+	struct bonding_device *bdev = container_of(tree, struct bonding_device, ports);
 
 	if (node_new) {
 		bp = container_of(node_new, struct bonding_port, node);
 
 		if (node_old) {
+			struct bonding_port *bp_old;
+
+			bp_old = container_of(node_old, struct bonding_port, node);
+			if (bp_old->set_primary != bp->set_primary) {
+				bp_old->set_primary = bp->set_primary;
+				bdev->reset_primary = true;
+			}
+
 			free(bp);
 			return;
 		}

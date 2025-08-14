@@ -116,7 +116,7 @@ build: build-zcip
 # NOTE: we have do define LIBNL_LIBS and the include path to libnl
 #       due to a bug in netifd's CMakeLists, that prevents incremental builds
 .PHONY: build-netifd
-build-netifd: build-libubox build-ubus build-uci  | $(WORKDIR)/build-netifd
+build-netifd: build-libubox build-ubus build-uci build-ucode  | $(WORKDIR)/build-netifd
 	@echo Building netifd
 	cmake $(COMMON_CMAKE_FLAGS) \
 		-DENABLE_PROTO_SHELL=OFF \

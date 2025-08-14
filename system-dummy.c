@@ -323,6 +323,12 @@ int system_flush_iprules(void)
 	return 0;
 }
 
+bool system_resolve_iprule_ipproto(const char *name, unsigned int *id)
+{
+	*id = 0;
+	return true;
+}
+
 bool system_resolve_iprule_action(const char *action, unsigned int *id)
 {
 	*id = 0;
@@ -382,6 +388,34 @@ int system_vlandev_add(struct device *vlandev, struct device *dev, struct vlande
 int system_vlandev_del(struct device *vlandev)
 {
 	return 0;
+}
+
+int system_vrf_addvrf(struct device *vrf, unsigned int table)
+{
+	return 0;
+}
+
+int system_vrf_delvrf(struct device *vrf)
+{
+	return 0;
+}
+
+int system_vrf_addif(struct device *vrf, struct device *dev)
+{
+	return 0;
+}
+
+int system_vrf_delif(struct device *vrf, struct device *dev)
+{
+	return 0;
+}
+
+void system_tcp_l3mdev(bool enable)
+{
+}
+
+void system_udp_l3mdev(bool enable)
+{
 }
 
 void system_globals_apply_settings(const struct global_settings *settings)

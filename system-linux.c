@@ -27,6 +27,7 @@
 #include <net/if_arp.h>
 
 #include <limits.h>
+#include <netdb.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/ether.h>
@@ -1116,6 +1117,115 @@ failure:
 	return ret;
 }
 
+int system_vrf_addvrf(struct device *vrf, unsigned int table)
+{
+	struct nlattr *linkinfo, *data;
+	struct nl_msg *msg;
+	int rv;
+
+	msg = system_ifinfo_msg(vrf->ifname, RTM_NEWLINK, NLM_F_CREATE | NLM_F_EXCL);
+	if (!msg)
+		return -1;
+
+	if (!(linkinfo = nla_nest_start(msg, IFLA_LINKINFO)))
+		goto nla_put_failure;
+
+	nla_put_string(msg, IFLA_INFO_KIND, "vrf");
+
+	if (!(data = nla_nest_start(msg, IFLA_INFO_DATA)))
+		goto nla_put_failure;
+
+	nla_put_u32(msg, IFLA_VRF_TABLE, table);
+
+	nla_nest_end(msg, data);
+	nla_nest_end(msg, linkinfo);
+
+	rv = system_rtnl_call(msg);
+	if (rv)
+		D(SYSTEM, "Error adding vrf '%s': %d\n", vrf->ifname, rv);
+
+	return rv;
+
+nla_put_failure:
+	nlmsg_free(msg);
+	return -ENOMEM;
+}
+
+int system_vrf_delvrf(struct device *vrf)
+{
+	return system_link_del(vrf->ifname);
+}
+
+static char *system_get_vrf(const char *name, char *buf, int buflen)
+{
+	char master[PATH_MAX];
+	char *path;
+	ssize_t len = -1;
+
+	if (snprintf(master, sizeof(master), "%s/devices/virtual/net/%s/master", sysfs_path, name) <= 0)
+		return NULL;
+
+	len = readlink(master, buf, buflen);
+	if (len < 0)
+		return NULL;
+
+	buf[len] = 0;
+	path = strrchr(buf, '/');
+	if (!path)
+		return NULL;
+
+	return path + 1;
+}
+
+static int
+system_vrf_if(int vrf_index, struct device *dev)
+{
+	struct nl_msg *msg;
+
+	msg = __system_ifinfo_msg(AF_UNSPEC, dev->ifindex, NULL, RTM_SETLINK, NLM_F_REQUEST);
+	if (!msg)
+		return -1;
+
+	nla_put_u32(msg, IFLA_MASTER, vrf_index);
+	return system_rtnl_call(msg);
+}
+
+int system_vrf_addif(struct device *vrf, struct device *dev)
+{
+	char *oldvrf;
+	int tries = 0;
+	int ret;
+
+retry:
+	ret = 0;
+	oldvrf = system_get_vrf(dev->ifname, dev_buf, sizeof(dev_buf));
+	if (!oldvrf || strcmp(oldvrf, vrf->ifname) != 0) {
+		ret = system_vrf_if(vrf->ifindex, dev);
+		tries++;
+		D(SYSTEM, "Failed to add device '%s' to vrf '%s' (tries=%d): %s\n",
+		  dev->ifname, vrf->ifname, tries, strerror(errno));
+		if (tries <= 3)
+			goto retry;
+	}
+
+	return ret;
+}
+
+int system_vrf_delif(struct device *vrf, struct device *dev)
+{
+	return system_vrf_if(0, dev);
+}
+
+void system_tcp_l3mdev(bool enable)
+{
+	system_set_dev_sysctl("ipv4", "tcp_l3mdev_accept", ".", enable ? "1" : "0");
+}
+
+void system_udp_l3mdev(bool enable)
+{
+	system_set_dev_sysctl("ipv4", "udp_l3mdev_accept", ".", enable ? "1" : "0");
+}
+
 int system_bonding_set_device(struct device *dev, struct bonding_config *cfg)
 {
 	const char *ifname = dev->ifname;
@@ -1133,7 +1243,7 @@ int system_bonding_set_device(struct device *dev, struct bonding_config *cfg)
 
 	system_set_dev_sysfs("bonding/mode", ifname, bonding_policy_str[cfg->policy]);
 
-	system_set_dev_sysfs_int("bonding/all_ports_active", ifname, cfg->all_ports_active);
+	system_set_dev_sysfs_int("bonding/all_slaves_active", ifname, cfg->all_ports_active);
 
 	if (cfg->policy == BONDING_MODE_BALANCE_XOR ||
 	    cfg->policy == BONDING_MODE_BALANCE_TLB ||
@@ -3674,7 +3784,25 @@ static int system_iprule(struct iprule *rule, int cmd)
 		nla_put_u32(msg, FRA_GOTO, rule->gotoid);
 
 	if (rule->flags & IPRULE_IPPROTO)
-		nla_put_u32(msg, FRA_IP_PROTO, rule->ipproto);
+		nla_put_u8(msg, FRA_IP_PROTO, rule->ipproto);
+
+	if (rule->flags & IPRULE_SPORT) {
+		struct fib_rule_port_range sportrange = {
+			.start = rule->sport_start,
+			.end = rule->sport_end
+		};
+
+		nla_put(msg, FRA_SPORT_RANGE, sizeof(sportrange), &sportrange);
+	}
+
+	if (rule->flags & IPRULE_DPORT) {
+		struct fib_rule_port_range dportrange = {
+			.start = rule->dport_start,
+			.end = rule->dport_end
+		};
+
+		nla_put(msg, FRA_DPORT_RANGE, sizeof(dportrange), &dportrange);
+	}
 
 	return system_rtnl_call(msg);
 }
@@ -3731,6 +3859,27 @@ int system_flush_iprules(void)
 bool system_resolve_iprule_action(const char *action, unsigned int *id)
 {
 	return system_rtn_aton(action, id);
+}
+
+bool system_resolve_iprule_ipproto(const char *name, unsigned int *id)
+{
+	char *e;
+	struct protoent *ent;
+	unsigned int n, ipproto = 0;
+
+	if ((n = strtoul(name, &e, 0)) > 0 && *e == '\0')
+		ipproto = n;
+	else {
+		ent = getprotobyname(name);
+
+		if (ent)
+			ipproto = ent->p_proto;
+		else
+			return false;
+	}
+
+	*id = ipproto;
+	return true;
 }
 
 time_t system_get_rtime(void)

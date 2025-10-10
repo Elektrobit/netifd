@@ -334,4 +334,9 @@ int system_netns_open(const pid_t target_ns);
 int system_netns_set(int netns_fd);
 
 void system_globals_apply_settings(const struct global_settings *settings);
+
+#ifndef SYSTEM_IMPL
+#include "system-log.h"
+#endif
+
 #endif

@@ -938,7 +938,16 @@ bridge_member_update(struct vlist_tree *tree, struct vlist_node *node_new,
 		bm = container_of(node_new, struct bridge_member, node);
 
 		if (node_old) {
+			struct device *dev = bm->dev.dev;
+
 			free(bm);
+
+			bm = container_of(node_old, struct bridge_member, node);
+			if (!dev || dev == bm->dev.dev)
+				return;
+
+			bridge_remove_member(bm);
+			device_add_user(&bm->dev, dev);
 			return;
 		}
 
@@ -1268,10 +1277,8 @@ bridge_reload(struct device *dev, struct blob_attr *attr)
 	bst = container_of(dev, struct bridge_state, dev);
 	attr = blob_memdup(attr);
 
-	blobmsg_parse(device_attr_list.params, __DEV_ATTR_MAX, tb_dev,
-		blob_data(attr), blob_len(attr));
-	blobmsg_parse(bridge_attrs, __BRIDGE_ATTR_MAX, tb_br,
-		blob_data(attr), blob_len(attr));
+	blobmsg_parse_attr(device_attr_list.params, __DEV_ATTR_MAX, tb_dev, attr);
+	blobmsg_parse_attr(bridge_attrs, __BRIDGE_ATTR_MAX, tb_br, attr);
 
 	if (tb_dev[DEV_ATTR_MACADDR])
 		bst->primary_port = NULL;
@@ -1284,8 +1291,8 @@ bridge_reload(struct device *dev, struct blob_attr *attr)
 		struct blob_attr *otb_dev[__DEV_ATTR_MAX];
 		struct blob_attr *otb_br[__BRIDGE_ATTR_MAX];
 
-		blobmsg_parse(device_attr_list.params, __DEV_ATTR_MAX, otb_dev,
-			blob_data(bst->config_data), blob_len(bst->config_data));
+		blobmsg_parse_attr(device_attr_list.params, __DEV_ATTR_MAX, otb_dev,
+				   bst->config_data);
 
 		uci_blob_diff(tb_dev, otb_dev, &device_attr_list, diff);
 		if (diff[0] | diff[1]) {
@@ -1294,8 +1301,7 @@ bridge_reload(struct device *dev, struct blob_attr *attr)
 			  dev->ifname, diff[1], diff[0]);
 		}
 
-		blobmsg_parse(bridge_attrs, __BRIDGE_ATTR_MAX, otb_br,
-			blob_data(bst->config_data), blob_len(bst->config_data));
+		blobmsg_parse_attr(bridge_attrs, __BRIDGE_ATTR_MAX, otb_br, bst->config_data);
 
 		diff[0] = diff[1] = 0;
 		uci_blob_diff(tb_br, otb_br, &bridge_attr_list, diff);
@@ -1305,7 +1311,7 @@ bridge_reload(struct device *dev, struct blob_attr *attr)
 			  dev->ifname, diff[1], diff[0]);
 		}
 
-		bridge_config_init(dev);
+		dev->config_pending = true;
 	}
 
 	free(bst->config_data);
@@ -1345,7 +1351,7 @@ bridge_vlan_equal(struct bridge_vlan *v1, struct bridge_vlan *v2)
 {
 	int i;
 
-	if (v1->n_ports != v2->n_ports)
+	if (v1->n_ports != v2->n_ports || v1->local != v2->local)
 		return false;
 
 	for (i = 0; i < v1->n_ports; i++)

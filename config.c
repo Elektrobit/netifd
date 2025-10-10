@@ -37,26 +37,24 @@ static struct uci_context *uci_ctx;
 static struct uci_package *uci_network;
 static struct blob_attr *board_netdevs;
 static struct blob_buf b;
+static LIST_HEAD(config_vlans);
+static LIST_HEAD(config_ifaces);
+
+struct vlan_config_entry {
+	struct list_head list;
+	struct blob_attr *data;
+	char *dev_name;
+	char name[];
+};
 
 static bool
 config_bridge_has_vlans(const char *br_name)
 {
-	struct uci_element *e;
+	struct vlan_config_entry *e;
 
-	uci_foreach_element(&uci_network->sections, e) {
-		struct uci_section *s = uci_to_section(e);
-		const char *name;
-
-		if (strcmp(s->type, "bridge-vlan") != 0)
-			continue;
-
-		name = uci_lookup_option_string(uci_ctx, s, "device");
-		if (!name)
-			continue;
-
-		if (!strcmp(name, br_name))
+	list_for_each_entry(e, &config_vlans, list)
+		if (!strcmp(e->dev_name, br_name))
 			return true;
-	}
 
 	return false;
 }
@@ -194,7 +192,7 @@ config_parse_interface(struct uci_section *s, bool alias)
 error_free_config:
 	free(config);
 error:
-	free(iface);
+	interface_free(iface);
 }
 
 static void
@@ -233,6 +231,123 @@ config_parse_rule(struct uci_section *s, bool v6)
 }
 
 static void
+config_insert_vlan_entry(const char *name, const char *dev_name, struct blob_attr *data)
+{
+	struct vlan_config_entry *e, *tmp;
+	struct blob_attr *attrbuf;
+	char *dev_name_buf;
+
+	list_for_each_entry_safe(e, tmp, &config_vlans, list) {
+		if (strcmp(e->name, name) != 0)
+			continue;
+
+		list_del(&e->list);
+		free(e);
+	}
+
+	e = calloc_a(sizeof(*e) + strlen(name) + 1,
+		     &attrbuf, blob_pad_len(data),
+		     &dev_name_buf, strlen(dev_name) + 1);
+	e->data = memcpy(attrbuf, data, blob_pad_len(data));
+	e->dev_name = strcpy(dev_name_buf, dev_name);
+	strcpy(e->name, name);
+	list_add_tail(&e->list, &config_vlans);
+}
+
+static void
+config_device_add(const char *name, struct device_type *devtype,
+		  struct blob_attr *config)
+{
+	struct device *dev;
+
+	if (devtype) {
+		dev = device_create(name, devtype, config);
+	} else {
+		dev = device_get(name, 1);
+		if (!dev)
+			return;
+
+		dev->current_config = true;
+		device_apply_config(dev, dev->type, config);
+	}
+
+	dev->default_config = false;
+}
+
+static void
+config_procd_device_cb(struct blob_attr *data)
+{
+	static const struct blobmsg_policy policy =
+		{ "type", BLOBMSG_TYPE_STRING };
+	const char *name = blobmsg_name(data);
+	struct device_type *devtype = NULL;
+	struct blob_attr *attr;
+
+	blobmsg_parse_attr(&policy, 1, &attr, data);
+	if (attr) {
+		const char *type_name = blobmsg_get_string(attr);
+
+		if (!strcmp(type_name, "bridge"))
+			return;
+
+		devtype = device_type_get(type_name);
+		if (!devtype)
+			return;
+	}
+
+	config_device_add(name, devtype, data);
+}
+
+static void
+config_procd_bridge_cb(struct blob_attr *data)
+{
+	enum {
+		PROCD_DEV_ATTR_TYPE,
+		PROCD_DEV_ATTR_VLANS,
+		__PROCD_DEV_ATTR_MAX
+	};
+	static const struct blobmsg_policy policy[] = {
+		[PROCD_DEV_ATTR_TYPE] = { "type", BLOBMSG_TYPE_STRING },
+		[PROCD_DEV_ATTR_VLANS] = { "vlans", BLOBMSG_TYPE_TABLE },
+	};
+	const char *name = blobmsg_name(data);
+	struct blob_attr *tb[__PROCD_DEV_ATTR_MAX], *attr, *cur;
+	struct device_type *devtype;
+	struct device *dev;
+	int len = 0;
+	size_t rem;
+
+	blobmsg_parse_attr(policy, ARRAY_SIZE(policy), tb, data);
+	if (!tb[PROCD_DEV_ATTR_TYPE] ||
+	    strcmp(blobmsg_get_string(tb[PROCD_DEV_ATTR_TYPE]), "bridge") != 0)
+		return;
+
+	devtype = device_type_get("bridge");
+	if (!devtype)
+		return;
+
+	attr = tb[PROCD_DEV_ATTR_VLANS];
+	if (attr)
+		len = blobmsg_check_array(attr, BLOBMSG_TYPE_TABLE);
+	if (len < 0)
+		return;
+
+	if (len > 0 || config_bridge_has_vlans(name)) {
+		blob_buf_init(&b, 0);
+		blob_put_raw(&b, blobmsg_data(data), blobmsg_len(data));
+		blobmsg_add_u8(&b, "vlan_filtering", 1);
+		data = b.head;
+	}
+
+	dev = device_create(name, devtype, data);
+	if (!dev || !dev->vlans.update || !len)
+		return;
+
+	blobmsg_for_each_attr(cur, attr, rem)
+		config_insert_vlan_entry(blobmsg_name(cur), name, cur);
+}
+
+static void
 config_init_devices(bool bridge)
 {
 	struct uci_element *e;
@@ -241,7 +356,6 @@ config_init_devices(bool bridge)
 		const struct uci_blob_param_list *params = NULL;
 		struct uci_section *s = uci_to_section(e);
 		struct device_type *devtype = NULL;
-		struct device *dev;
 		const char *type, *name;
 
 		if (strcmp(s->type, "device") != 0)
@@ -270,65 +384,47 @@ config_init_devices(bool bridge)
 
 		blob_buf_init(&b, 0);
 		uci_to_blob(&b, s, params);
-		if (devtype) {
-			dev = device_create(name, devtype, b.head);
-			if (!dev)
-				continue;
-		} else {
-			dev = device_get(name, 1);
-			if (!dev)
-				continue;
-
-			dev->current_config = true;
-			device_apply_config(dev, dev->type, b.head);
-		}
-		dev->default_config = false;
+		config_device_add(name, devtype, b.head);
 	}
+
+	netifd_ubus_get_procd_data("network-device",
+		bridge ? config_procd_bridge_cb : config_procd_device_cb);
 }
 
+enum {
+	BRVLAN_ATTR_VID,
+	BRVLAN_ATTR_LOCAL,
+	BRVLAN_ATTR_PORTS,
+	BRVLAN_ATTR_ALIAS,
+	__BRVLAN_ATTR_MAX,
+};
+
+static const struct blobmsg_policy vlan_attrs[__BRVLAN_ATTR_MAX] = {
+	[BRVLAN_ATTR_VID] = { "vlan", BLOBMSG_TYPE_INT32 },
+	[BRVLAN_ATTR_LOCAL] = { "local", BLOBMSG_TYPE_BOOL },
+	[BRVLAN_ATTR_PORTS] = { "ports", BLOBMSG_TYPE_ARRAY },
+	[BRVLAN_ATTR_ALIAS] = { "alias", BLOBMSG_TYPE_ARRAY },
+};
+
 static void
-config_parse_vlan(struct device *dev, struct uci_section *s)
+config_init_vlan_entry(struct vlan_config_entry *e)
 {
-	enum {
-		BRVLAN_ATTR_VID,
-		BRVLAN_ATTR_LOCAL,
-		BRVLAN_ATTR_PORTS,
-		BRVLAN_ATTR_ALIAS,
-		__BRVLAN_ATTR_MAX,
-	};
-	static const struct blobmsg_policy vlan_attrs[__BRVLAN_ATTR_MAX] = {
-		[BRVLAN_ATTR_VID] = { "vlan", BLOBMSG_TYPE_INT32 },
-		[BRVLAN_ATTR_LOCAL] = { "local", BLOBMSG_TYPE_BOOL },
-		[BRVLAN_ATTR_PORTS] = { "ports", BLOBMSG_TYPE_ARRAY },
-		[BRVLAN_ATTR_ALIAS] = { "alias", BLOBMSG_TYPE_ARRAY },
-	};
-	static const struct uci_blob_param_info vlan_attr_info[__BRVLAN_ATTR_MAX] = {
-		[BRVLAN_ATTR_PORTS] = { .type = BLOBMSG_TYPE_STRING },
-		[BRVLAN_ATTR_ALIAS] = { .type = BLOBMSG_TYPE_STRING },
-	};
-	static const struct uci_blob_param_list vlan_attr_list = {
-		.n_params = __BRVLAN_ATTR_MAX,
-		.params = vlan_attrs,
-		.info = vlan_attr_info,
-	};
 	struct blob_attr *tb[__BRVLAN_ATTR_MAX];
 	struct blob_attr *cur;
 	struct bridge_vlan_port *port;
 	struct bridge_vlan *vlan;
+	struct device *dev;
 	unsigned int vid;
-	const char *val;
 	char *name_buf;
 	int name_len = 0;
 	int n_ports = 0;
 	size_t rem;
 
-	val = uci_lookup_option_string(uci_ctx, s, "vlan");
-	if (!val)
+	dev = device_get(e->dev_name, 0);
+	if (!dev || !dev->vlans.update)
 		return;
 
-	blob_buf_init(&b, 0);
-	uci_to_blob(&b, s, &vlan_attr_list);
-	blobmsg_parse(vlan_attrs, __BRVLAN_ATTR_MAX, tb, blob_data(b.head), blob_len(b.head));
+	blobmsg_parse_attr(vlan_attrs, __BRVLAN_ATTR_MAX, tb, e->data);
 
 	if (!tb[BRVLAN_ATTR_VID])
 		return;
@@ -386,14 +482,43 @@ config_parse_vlan(struct device *dev, struct uci_section *s)
 	vlist_add(&dev->vlans, &vlan->node, &vlan->vid);
 }
 
+static void
+config_load_vlan(const char *dev_name, struct uci_section *s)
+{
+	static const struct uci_blob_param_info vlan_attr_info[__BRVLAN_ATTR_MAX] = {
+		[BRVLAN_ATTR_PORTS] = { .type = BLOBMSG_TYPE_STRING },
+		[BRVLAN_ATTR_ALIAS] = { .type = BLOBMSG_TYPE_STRING },
+	};
+	static const struct uci_blob_param_list vlan_attr_list = {
+		.n_params = __BRVLAN_ATTR_MAX,
+		.params = vlan_attrs,
+		.info = vlan_attr_info,
+	};
+
+	blob_buf_init(&b, 0);
+	uci_to_blob(&b, s, &vlan_attr_list);
+	config_insert_vlan_entry(s->e.name, dev_name, b.head);
+}
 
 static void
-config_init_vlans(void)
+config_procd_vlan_cb(struct blob_attr *data)
+{
+	static const struct blobmsg_policy policy =
+		{ "device", BLOBMSG_TYPE_STRING };
+	struct blob_attr *attr;
+
+	blobmsg_parse_attr(&policy, 1, &attr, data);
+	if (!attr)
+		return;
+
+	config_insert_vlan_entry(blobmsg_name(data), blobmsg_get_string(attr), data);
+}
+
+static void
+config_load_vlans(void)
 {
 	struct uci_element *e;
-	struct device *dev;
 
-	device_vlan_update(false);
 	uci_foreach_element(&uci_network->sections, e) {
 		struct uci_section *s = uci_to_section(e);
 		const char *name;
@@ -405,11 +530,23 @@ config_init_vlans(void)
 		if (!name)
 			continue;
 
-		dev = device_get(name, 0);
-		if (!dev || !dev->vlans.update)
-			continue;
+		config_load_vlan(name, s);
+	}
 
-		config_parse_vlan(dev, s);
+	netifd_ubus_get_procd_data("bridge-vlan", config_procd_vlan_cb);
+}
+
+static void
+config_init_vlans(void)
+{
+	struct vlan_config_entry *e;
+
+	device_vlan_update(false);
+	while (!list_empty(&config_vlans)) {
+		e = list_first_entry(&config_vlans, struct vlan_config_entry, list);
+		list_del(&e->list);
+		config_init_vlan_entry(e);
+		free(e);
 	}
 	device_vlan_update(true);
 }
@@ -444,8 +581,29 @@ config_init_package(const char *config)
 }
 
 static void
+config_procd_interface_cb(struct blob_attr *data)
+{
+	struct interface *iface;
+	const char *name = blobmsg_name(data);
+
+	iface = interface_alloc(name, data, false);
+	if (!iface)
+		return;
+
+	data = blob_memdup(data);
+	if (!data) {
+		interface_free(iface);
+		return;
+	}
+
+	iface->config = data;
+	list_add(&iface->node.avl.list, &config_ifaces);
+}
+
+static void
 config_init_interfaces(void)
 {
+	struct interface *iface;
 	struct uci_element *e;
 
 	uci_foreach_element(&uci_network->sections, e) {
@@ -460,6 +618,15 @@ config_init_interfaces(void)
 
 		if (!strcmp(s->type, "alias"))
 			config_parse_interface(s, true);
+	}
+
+	netifd_ubus_get_procd_data("network-interface", config_procd_interface_cb);
+	while (!list_empty(&config_ifaces)) {
+		iface = list_first_entry(&config_ifaces, struct interface, node.avl.list);
+		list_del(&iface->node.avl.list);
+
+		if (!interface_add(iface, iface->config))
+			interface_free(iface);
 	}
 }
 
@@ -549,7 +716,7 @@ config_find_blobmsg_attr(struct blob_attr *attr, const char *name, int type)
 	struct blobmsg_policy policy = { .name = name, .type = type };
 	struct blob_attr *cur;
 
-	blobmsg_parse(&policy, 1, &cur, blobmsg_data(attr), blobmsg_len(attr));
+	blobmsg_parse_attr(&policy, 1, &cur, attr);
 
 	return cur;
 }
@@ -649,6 +816,7 @@ config_init_all(void)
 	config_init = true;
 
 	device_reset_config();
+	config_load_vlans();
 	config_init_devices(true);
 	config_init_vlans();
 	config_init_devices(false);

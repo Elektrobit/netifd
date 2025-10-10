@@ -704,19 +704,24 @@ interface_cleanup(struct interface *iface)
 	interface_cleanup_state(iface);
 }
 
-static void
-interface_do_free(struct interface *iface)
+void interface_free(struct interface *iface)
 {
-	interface_event(iface, IFEV_FREE);
-	interface_cleanup(iface);
 	free(iface->config);
-	netifd_ubus_remove_interface(iface);
-	avl_delete(&interfaces.avl, &iface->node.avl);
 	free(iface->zone);
 	free(iface->jail);
 	free(iface->jail_device);
 	free(iface->host_device);
 	free(iface);
+}
+
+static void
+interface_do_remove(struct interface *iface)
+{
+	interface_event(iface, IFEV_FREE);
+	interface_cleanup(iface);
+	netifd_ubus_remove_interface(iface);
+	avl_delete(&interfaces.avl, &iface->node.avl);
+	interface_free(iface);
 }
 
 static void
@@ -741,7 +746,7 @@ interface_handle_config_change(struct interface *iface)
 		interface_do_reload(iface);
 		break;
 	case IFC_REMOVE:
-		interface_do_free(iface);
+		interface_do_remove(iface);
 		return;
 	}
 	if (iface->autostart)
@@ -839,8 +844,7 @@ interface_alloc(const char *name, struct blob_attr *config, bool dynamic)
 	iface->l3_dev.cb = interface_l3_dev_cb;
 	iface->ext_dev.cb = interface_ext_dev_cb;
 
-	blobmsg_parse(iface_attrs, IFACE_ATTR_MAX, tb,
-		      blob_data(config), blob_len(config));
+	blobmsg_parse_attr(iface_attrs, IFACE_ATTR_MAX, tb, config);
 
 	iface->zone = NULL;
 	if ((cur = tb[IFACE_ATTR_ZONE]))
@@ -954,8 +958,7 @@ static bool __interface_add(struct interface *iface, struct blob_attr *config, b
 	struct blob_attr *cur;
 	char *name = NULL;
 
-	blobmsg_parse(iface_attrs, IFACE_ATTR_MAX, tb,
-		      blob_data(config), blob_len(config));
+	blobmsg_parse_attr(iface_attrs, IFACE_ATTR_MAX, tb, config);
 
 	if (alias) {
 		if ((cur = tb[IFACE_ATTR_INTERFACE]))
@@ -1274,11 +1277,8 @@ interface_device_config_changed(struct interface *if_old, struct interface *if_n
 	if (!if_new->device_config)
 		return false;
 
-	blobmsg_parse(device_attr_list.params, __DEV_ATTR_MAX, otb,
-		blob_data(if_old->config), blob_len(if_old->config));
-
-	blobmsg_parse(device_attr_list.params, __DEV_ATTR_MAX, ntb,
-		blob_data(if_new->config), blob_len(if_new->config));
+	blobmsg_parse_attr(device_attr_list.params, __DEV_ATTR_MAX, otb, if_old->config);
+	blobmsg_parse_attr(device_attr_list.params, __DEV_ATTR_MAX, ntb, if_new->config);
 
 	uci_blob_diff(ntb, otb, &device_attr_list, diff);
 
@@ -1373,6 +1373,13 @@ interface_change_config(struct interface *if_old, struct interface *if_new)
 	interface_merge_assignment_data(if_old, if_new);
 
 #undef UPDATE
+
+	if (!reload) {
+		struct device *old_dev = if_old->main_dev.dev;
+
+		interface_claim_device(if_old);
+		reload = if_old->main_dev.dev != old_dev;
+	}
 
 	if (reload) {
 		D(INTERFACE, "Reload interface '%s' because of config changes",

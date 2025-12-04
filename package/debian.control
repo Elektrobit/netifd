@@ -4,6 +4,7 @@ Build-Depends: cmake, debhelper (>= 9), libubus-dev, libubox-dev, libjson-c-dev,
 Standards-Version: 4.5.0
 Priority: optional
 Section: net
+Rules-Requires-Root: no
 
 Package: netifd
 Architecture: any
